@@ -4,9 +4,11 @@
     "widgets": {
       "emergency": {
         "comp": "cmergent-emergency-header",
-        "script": "https://spark.chasemergenthal.com/cherry-picker/build/emergency-header.js?v=emergency-header-2",
+        "script": "https://widgets.example.com/cherry-picker/build/emergency-header.js?v=emergency-header-3",
         "properties": {
-          "accessToken": "$STORE.auth.accessToken"
+          "accessToken": "$STORE.auth.accessToken",
+          "emergencyQueueName": "",
+          "emergencyQueueId": ""
         },
         "attributes": {
           "style": "height:64px;display:flex;align-items:center;"

@@ -1,24 +1,40 @@
 # Emergency queue header
 
-A compact Web Component for Webex Contact Center Agent Desktop. It shows only the newest waiting voice contact in `cmergentEmergency` and an **Answer** button. The newest contact is selected by `createdTime`, not by the time a contact's status was last updated.
+A compact Web Component for Webex Contact Center Agent Desktop. It shows only the newest waiting voice contact in the configured queue and an **Answer** button. The newest contact is selected by `createdTime`, not by the time a contact's status was last updated.
 
 When the agent is already on a voice call, **Answer** returns that call to its original/current routing queue, completes the configured wrap-up, claims the selected emergency contact, waits for that exact contact's offer, and requests WebRTC answer. With no current voice task, it claims and answers directly. No SQL or additional PHP endpoints are required.
 
 ## Deploy
 
 1. Upload `dist/build/emergency-header.js` to:
-   `https://spark.chasemergenthal.com/cherry-picker/build/emergency-header.js`
+   `https://widgets.example.com/cherry-picker/build/emergency-header.js`
+Replace `widgets.example.com` in layout script URLs with your own hosting domain.
+
 2. Merge these properties into your existing `/cherry-picker/config.js`. Keep your other settings. Use your real wrap-up code ID and its exact configured name:
 
    ```js
-   emergencyQueueName: 'cmergentEmergency',
-   emergencyQueueId: '', // optional exact queue ID instead of matching its name
+   emergencyQueueName: 'YOUR_QUEUE_NAME', // exact name; leave blank when using queue ID
+   emergencyQueueId: '', // use a stable queue ID instead of the name if preferred
    emergencyTransferMode: 'original',
    emergencyTransferQueueId: '', // leave blank to return the current call to its queue
    wrapUpCodeId: 'YOUR_EXISTING_WRAP_UP_CODE_ID',
    transferWrapUpReason: 'YOUR_EXACT_WRAP_UP_CODE_NAME',
    webRtcEnabled: true,
    ```
+
+   Configure at least one of `emergencyQueueName` or `emergencyQueueId`. There is no default queue. Queue IDs take precedence over names when both are supplied. A missing queue setting displays a configuration error and disables Answer.
+
+   You can configure an individual header through its layout `properties` instead:
+
+   ```json
+   "properties": {
+     "accessToken": "$STORE.auth.accessToken",
+     "emergencyQueueName": "YOUR_QUEUE_NAME",
+     "emergencyQueueId": ""
+   }
+   ```
+
+   Nonblank queue properties in the layout override the shared settings in `config.js`. Blank layout fields use `config.js`. The name is used as the header label when provided. Reload Agent Desktop after changing either source.
 
    The header always completes wrap-up automatically when replacing an active call. It requires the code ID/name even if the full Cherry Picker's `autoWrapUpOnTransfer` option is false. Choose a code that accurately describes a queue transfer and is available to this agent. Configuration is checked before transferring.
 3. Merge `emergency-header-layout.json` into the **`area`** object of the Desktop layout assigned to this agent. It contains an `area.header` fragment, not a complete replacement layout. If `area.header` already exists, add the `emergency` widget to its `widgets` and its existing layout row rather than replacing your other header widgets.
@@ -27,7 +43,7 @@ When the agent is already on a voice call, **Answer** returns that call to its o
    ```json
    {
      "comp": "cmergent-emergency-header",
-     "script": "https://spark.chasemergenthal.com/cherry-picker/build/emergency-header.js?v=emergency-header-2",
+     "script": "https://widgets.example.com/cherry-picker/build/emergency-header.js?v=emergency-header-3",
      "properties": { "accessToken": "$STORE.auth.accessToken" },
      "attributes": { "style": "height:64px;display:flex;align-items:center;" }
    }

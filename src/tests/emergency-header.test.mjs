@@ -1,18 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { newestEmergency, transferDestination, listEmergencyTasks, answerPickedOffer, takeEmergency, emergencyDiagnostics } from '../emergency-header.js';
+import { newestEmergency, transferDestination, listEmergencyTasks, answerPickedOffer, takeEmergency, emergencyDiagnostics, configuredEmergencyQueue } from '../emergency-header.js';
 
 const row = (id, time, overrides = {}) => ({ id, attributes: { status: 'queued', channelType: 'telephony', createdTime: time,
-  origin: '+15551230000', queue: { id: 'emergency', name: 'cmergentEmergency' }, ...overrides } });
+  origin: '+15551230000', queue: { id: 'emergency', name: 'Emergency Queue' }, ...overrides } });
 const picked = row('picked', 100);
 const activeTask = { interaction: { interactionId: 'active', mediaType: 'telephony', state: 'connected', currentVTeam: 'original-queue' } };
-const settings = { queueName: 'cmergentEmergency', emergencyTransferMode: 'original', wrapUpCodeId: 'code', transferWrapUpReason: 'Transferred' };
+const settings = { queueName: 'Emergency Queue', emergencyTransferMode: 'original', wrapUpCodeId: 'code', transferWrapUpReason: 'Transferred' };
 
 test('only newest waiting voice contact from the exact emergency queue appears', () => {
   const rows = [row('old', 1), row('new', 2), row('chat', 5, { channelType: 'chat' }), row('assigned', 6, { status: 'assigned' }),
     row('other', 7, { queue: { name: 'Other' } }), row('bad-time', 'bad')];
-  assert.equal(newestEmergency(rows).id, 'new');
-  assert.equal(newestEmergency([row('wrong-case', 9, { queue: { name: 'cmergentemergency' } })]), null);
+  assert.equal(newestEmergency(rows, settings).id, 'new');
+  assert.equal(newestEmergency([row('wrong-case', 9, { queue: { name: 'emergency queue' } })], settings), null);
   assert.equal(newestEmergency([row('by-id', 3, { queue: { id: 'fixed' } })], { queueId: 'fixed' }).id, 'by-id');
   assert.equal(newestEmergency([]), null);
 });
@@ -124,7 +124,7 @@ test('full oldest-first pages without accessible links advance to the newest con
     } });
   assert.equal(requests, 2);
   assert.equal(result.length, 1505);
-  assert.equal(newestEmergency(result).id, 'task-1504');
+  assert.equal(newestEmergency(result, settings).id, 'task-1504');
   assert.deepEqual(pages.map(page => page.count), [1000, 506]);
 });
 
@@ -139,10 +139,27 @@ test('overlapping full-page timestamps are preserved; unpageable ties fail expli
 
 test('diagnostics expose aggregate queue status and counts without callers or tokens', () => {
   const report = emergencyDiagnostics([row('private-task-id', 1, { origin: 'private-phone' }), row('completed', 2, { status: 'completed' })],
-    { queueName: 'cmergentEmergency', wxccApiBaseUrl: 'https://api.test' }, [{ count: 2, status: 200 }]);
+    { queueName: 'Emergency Queue', wxccApiBaseUrl: 'https://api.test' }, [{ count: 2, status: 200 }]);
   assert.equal(report.targetQueueTaskCount, 2);
   assert.equal(report.waitingTaskCount, 1);
   assert.deepEqual(report.targetStatuses, ['queued', 'completed']);
-  assert.equal(report.build, 'emergency-header-2');
+  assert.equal(report.build, 'emergency-header-3');
   assert.doesNotMatch(JSON.stringify(report), /private-phone|private-task-id|Authorization|Bearer/);
+});
+
+test('queue must be configured explicitly by name or ID; missing config cannot match calls', () => {
+  assert.throws(() => configuredEmergencyQueue({}), /Set emergencyQueueName or emergencyQueueId/);
+  assert.throws(() => configuredEmergencyQueue({ emergencyQueueName: '   ', emergencyQueueId: '' }), /Set emergencyQueueName/);
+  assert.deepEqual(configuredEmergencyQueue({ emergencyQueueName: '  Priority Voice  ' }), { queueName: 'Priority Voice', queueId: '' });
+  assert.deepEqual(configuredEmergencyQueue({ emergencyQueueId: ' queue-123 ' }), { queueName: '', queueId: 'queue-123' });
+  assert.equal(newestEmergency([picked]), null);
+  assert.equal(newestEmergency([row('other-config', 100, { queue: { name: 'Other Queue' } })], { queueName: 'Other Queue' }).id, 'other-config');
+});
+
+test('layout queue properties override shared configuration without retaining its old ID', () => {
+  const config = { emergencyQueueName: 'Shared Queue', emergencyQueueId: 'shared-id' };
+  assert.deepEqual(configuredEmergencyQueue(config, { emergencyQueueName: '  Header Queue  ' }), { queueName: 'Header Queue', queueId: '' });
+  assert.deepEqual(configuredEmergencyQueue(config, { emergencyQueueId: 'header-id' }), { queueName: '', queueId: 'header-id' });
+  assert.deepEqual(configuredEmergencyQueue(config, { emergencyQueueName: '', emergencyQueueId: '' }), { queueName: 'Shared Queue', queueId: 'shared-id' });
+  assert.equal(newestEmergency([row('wrong-id', 100, { queue: { id: 'other', name: 'Shared Queue' } })], configuredEmergencyQueue(config)), null);
 });

@@ -1,6 +1,6 @@
 # WxCC Emergency Cherry Picker
 
-Independent project with the full Cherry Picker widget, compact `cmergentEmergency` header widget, PHP backend, and JSON file storage. See [the emergency header guide](src/EMERGENCY-HEADER.md), [deployment checklist](SETUP-CHECKLIST.md), and [source attribution](NOTICE.md).
+Independent project with the full Cherry Picker widget, configurable emergency header widget, PHP backend, and JSON file storage. See [the emergency header guide](src/EMERGENCY-HEADER.md), [deployment checklist](SETUP-CHECKLIST.md), and [source attribution](NOTICE.md).
 
 ## Use Case Overview
 
@@ -138,13 +138,13 @@ The widget now uses Desktop SDK 3.0.1 and awaits SDK initialization. After a suc
 
 The installed SDK dispatches `ax-web-call-answer`; it does not return confirmation that audio connected. The UI reports the answer request and asks you to confirm the native call timer/audio. If the claimed task is missing or multiple voice tasks are present, no answer request is sent. The control expires after 60 seconds and is cleared on end/wrap-up or widget removal. It does not automatically answer on Claim.
 
-Upload the updated `dist/build/bundle.js` only, preserve your deployed PHP configuration, and use `https://spark.chasemergenthal.com/cherry-picker/build/bundle.js?v=webrtc-sdk-3-1` in the Desktop layout to bypass the older cached bundle. Browser answering is enabled unless runtime config explicitly sets `webRtcEnabled: false`. Keep Conference disabled during this test. This migration uses the supported `Desktop.actions.getToken()` for task/metadata requests.
+Upload the updated `dist/build/bundle.js` only, preserve your deployed PHP configuration, and use `https://widgets.example.com/cherry-picker/build/bundle.js?v=webrtc-sdk-3-1` in the Desktop layout to bypass the older cached bundle. Browser answering is enabled unless runtime config explicitly sets `webRtcEnabled: false`. Keep Conference disabled during this test. This migration uses the supported `Desktop.actions.getToken()` for task/metadata requests.
 
 Local tests cover the answer guards and the installed SDK's dispatched event; live WebRTC audio and native Desktop behavior remain to be verified in your tenant.
 
 ### Minimal emergency header
 
-The separate `cmergent-emergency-header` Web Component displays the newest waiting contact from `cmergentEmergency`. One click returns the current call to its original queue, completes configured wrap-up, claims the selected emergency contact and requests WebRTC answer when that exact offer arrives. It also works when no call is active. The compact **Accept** fallback retries browser answer when a browser gesture is required. See [header deployment and configuration](src/EMERGENCY-HEADER.md) and the [Desktop layout fragment](src/emergency-header-layout.json). The build produces `dist/build/emergency-header.js` alongside the existing bundle. Live audio and transfer verification in your tenant is required.
+The separate `cmergent-emergency-header` Web Component displays the newest waiting contact from a queue configured by name or ID in runtime settings or layout properties. One click returns the current call to its original queue, completes configured wrap-up, claims the selected emergency contact and requests WebRTC answer when that exact offer arrives. It also works when no call is active. The compact **Accept** fallback retries browser answer when a browser gesture is required. See [header deployment and configuration](src/EMERGENCY-HEADER.md) and the [Desktop layout fragment](src/emergency-header-layout.json). The build produces `dist/build/emergency-header.js` alongside the existing bundle. Live audio and transfer verification in your tenant is required.
 
 ### Transfer the active call to a selected queue and pick another
 
@@ -172,7 +172,7 @@ Successful queue lists are retained in page memory for up to 30 minutes for the 
 
 SDK 3.0.1 may leave `latestData.agentSessionId` empty when the widget loads after sign-in. The widget also captures session IDs from the documented agent state/relogin events, including `eAgentChannelStateChanged`. If the session ID is missing, finish the current call and wrap-up, then manually change voice availability with this widget loaded and refresh queues. The widget never changes agent availability automatically. See the [Desktop SDK event documentation](https://developer.webex.com/webex-contact-center/docs/desktop).
 
-Deployment: replace only `build/bundle.js` and set the Desktop layout URL to `https://spark.chasemergenthal.com/cherry-picker/build/bundle.js?v=queue-transfer-7`. Preserve your existing server configuration and `config.js`. Live queue-transfer and audio testing in your tenant remains required.
+Deployment: replace only `build/bundle.js` and set the Desktop layout URL to `https://widgets.example.com/cherry-picker/build/bundle.js?v=queue-transfer-7`. Preserve your existing server configuration and `config.js`. Live queue-transfer and audio testing in your tenant remains required.
 
 ### 8. Configure optional Conference/Merge
 

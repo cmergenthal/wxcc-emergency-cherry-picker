@@ -1,7 +1,22 @@
 import { voiceTasks, withDeadline, transferThenClaim, configuredTransferWrapup } from './queue-transfer.js';
 import { acceptClaimedWebRtcCall } from './webrtc.js';
 
-export function newestEmergency(rows, { queueName = 'cmergentEmergency', queueId = '' } = {}) {
+// Nonblank layout properties override the shared runtime configuration.
+export function configuredEmergencyQueue(config, properties = {}) {
+  const text = value => typeof value === 'string' ? value.trim() : '';
+  const propertyName = text(properties.emergencyQueueName);
+  const propertyId = text(properties.emergencyQueueId);
+  const useProperties = !!(propertyName || propertyId);
+  const queueName = useProperties ? propertyName : text(config.emergencyQueueName);
+  const queueId = useProperties ? propertyId : text(config.emergencyQueueId);
+  if (!queueName && !queueId) {
+    throw new Error('Set emergencyQueueName or emergencyQueueId in config.js or the widget layout properties.');
+  }
+  return { queueName, queueId };
+}
+
+export function newestEmergency(rows, { queueName = '', queueId = '' } = {}) {
+  if (!queueName && !queueId) return null;
   return rows.filter(row => {
     const task = row.attributes || {};
     const media = task.channelType || task.mediaType;
@@ -80,7 +95,7 @@ export function emergencyDiagnostics(rows, settings, pages = []) {
     ? String(row.attributes?.queue?.id || row.attributes?.queueId || '') === settings.queueId
     : row.attributes?.queue?.name === settings.queueName);
   return {
-    build: 'emergency-header-2', checkedAt: new Date().toISOString(), apiOrigin: new URL(settings.wxccApiBaseUrl).origin,
+    build: 'emergency-header-3', checkedAt: new Date().toISOString(), apiOrigin: new URL(settings.wxccApiBaseUrl).origin,
     targetQueueName: settings.queueName, matchesBy: settings.queueId ? 'queue ID' : 'queue name',
     taskCount: rows.length, waitingTaskCount: waiting, targetQueueTaskCount: targetRows.length,
     targetStatuses: [...new Set(targetRows.map(row => row.attributes?.status))], pages,

@@ -2,7 +2,7 @@ import { Desktop } from '@wxcc-desktop/sdk';
 import { withDeadline } from './queue-transfer.js';
 import { assignVoiceTask } from './transport.js';
 import { acceptClaimedWebRtcCall } from './webrtc.js';
-import { newestEmergency, listEmergencyTasks, takeEmergency, emergencyDiagnostics } from './emergency-header.js';
+import { newestEmergency, listEmergencyTasks, takeEmergency, emergencyDiagnostics, configuredEmergencyQueue } from './emergency-header.js';
 
 const sourceUrl = document.currentScript?.src;
 const configUrl = new URL('../config.js', sourceUrl || location.href);
@@ -36,7 +36,7 @@ class EmergencyHeader extends HTMLElement {
       </style>
       <div class="bar">
         <span class="dot" aria-hidden="true"></span>
-        <div class="copy"><span class="title">Emergency · cmergentEmergency</span><span class="contact">Loading…</span><span class="status" role="status" aria-live="polite"></span></div>
+        <div class="copy"><span class="title">Emergency</span><span class="contact">Loading…</span><span class="status" role="status" aria-live="polite"></span></div>
         <button type="button" disabled>Answer</button>
         <button type="button" class="info" aria-label="Queue diagnostics" title="Queue diagnostics">i</button>
       </div>
@@ -45,7 +45,7 @@ class EmergencyHeader extends HTMLElement {
     this.button = this.shadowRoot.querySelector('button');
     this.button.onclick = () => this.answer();
     this.shadowRoot.querySelector('.info').onclick = () => {
-      this.shadowRoot.querySelector('pre').textContent = JSON.stringify(this.diagnostics || { build: 'emergency-header-2', state: 'No completed lookup yet.' }, null, 2);
+      this.shadowRoot.querySelector('pre').textContent = JSON.stringify(this.diagnostics || { build: 'emergency-header-3', state: 'No completed lookup yet.' }, null, 2);
       this.shadowRoot.querySelector('dialog').showModal();
     };
     this.shadowRoot.querySelector('.close-report').onclick = () => this.shadowRoot.querySelector('dialog').close();
@@ -65,9 +65,9 @@ class EmergencyHeader extends HTMLElement {
     try {
       const config = await configReady;
       if (!this.isConnected || this.generation !== generation) return;
-      this.settings = { ...config, queueName: config.emergencyQueueName || 'cmergentEmergency', queueId: config.emergencyQueueId || '',
+      this.settings = { ...config, ...configuredEmergencyQueue(config, this),
         emergencyTransferMode: config.emergencyTransferMode || 'original' };
-      this.nodes.title.textContent = `Emergency · ${this.settings.queueName}`;
+      this.nodes.title.textContent = this.settings.queueName ? `Emergency · ${this.settings.queueName}` : 'Emergency';
       await withDeadline(() => Desktop.config.init({ widgetName: 'Emergency Header', widgetProvider: 'Custom' }), 15000, 'Desktop initialization timed out. Reload Desktop.');
       if (!this.isConnected || this.generation !== generation) return;
       this.listen('eAgentOfferContact', event => {
@@ -91,7 +91,13 @@ class EmergencyHeader extends HTMLElement {
       await this.poll();
       if (!this.isConnected || this.generation !== generation) return;
       this.timer = setInterval(() => this.poll(), Math.max(5000, Number(config.pollIntervalMs) || 5000));
-    } catch (error) { if (this.isConnected) this.status(error.message, true); }
+    } catch (error) {
+      if (this.isConnected) {
+        this.lookupFailed = true;
+        this.status(error.message, true);
+        this.render();
+      }
+    }
     finally { this.starting = false; }
   }
 

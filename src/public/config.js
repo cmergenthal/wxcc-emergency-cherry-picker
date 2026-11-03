@@ -8,7 +8,7 @@ window.CHERRY_PICKER_CONFIG = {
   holdExtension: '',
   conferenceEnabled: false, // enable after configuring and testing the hold/return flow
   // Optional compact header widget; merge these into an existing hosted config.
-  emergencyQueueName: 'cmergentEmergency',
+  emergencyQueueName: '', // required exact queue name unless emergencyQueueId is set
   emergencyQueueId: '', // optional exact queue ID, preferred if names can change
   emergencyTransferMode: 'original', // return the existing call to its original queue
   emergencyTransferQueueId: '', // optional fixed destination, overrides original queue

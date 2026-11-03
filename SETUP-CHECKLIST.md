@@ -14,7 +14,7 @@ The application has been refactored to PHP + private JSON files, retaining the `
 
 ## Your hosting setup
 
-Hosted base URL: https://spark.chasemergenthal.com/cherry-picker/
+Hosted base URL: https://widgets.example.com/cherry-picker/
 
 The local Desktop layout and inbound flow now contain this hostname. `config.js` can keep its relative `./api/` setting.
 
@@ -30,9 +30,9 @@ The local Desktop layout and inbound flow now contain this hostname. `config.js`
 ## Webex setup
 
 - [ ] Enable manual assignment on the test queue and manual telephony capacity 1 on the effective agent multimedia profile.
-- [ ] Import `src/flow/GenericCherryPickerFlow.json`, select your queue/prompts, and set the webhook URL to `https://spark.chasemergenthal.com/cherry-picker/api/webhook.php`.
+- [ ] Import `src/flow/GenericCherryPickerFlow.json`, select your queue/prompts, and set the webhook URL to `https://widgets.example.com/cherry-picker/api/webhook.php`.
 - [ ] Add the flow HTTP header `X-Webhook-Secret` with your server-side secret. Validate and publish, then associate the flow with your test inbound number.
-- [ ] Set `src/cherryPickerWidget.json`'s script to `https://spark.chasemergenthal.com/cherry-picker/build/bundle.js`; upload/merge and assign the layout to the team.
+- [ ] Set `src/cherryPickerWidget.json`'s script to `https://widgets.example.com/cherry-picker/build/bundle.js`; upload/merge and assign the layout to the team.
 - [ ] Sign in to Agent Desktop, confirm the widget and metadata requests work, and test inbound call → queue list → Claim → wrap-up.
 - [ ] Confirm two agents cannot successfully claim the same Webex call.
 
@@ -44,3 +44,10 @@ The local Desktop layout and inbound flow now contain this hostname. `config.js`
 - [ ] Verify the agent's Calling service/events work, enable Conference in `config.js`, and test hold → claim second caller → merge → recovery on failure.
 
 Full commands, endpoint contracts, limitations, and troubleshooting are in [the PHP deployment guide](README.md).
+
+## Optional emergency header
+
+- [ ] Replace `widgets.example.com` with your hosting domain in `src/emergency-header-layout.json`.
+- [ ] Set `emergencyQueueName` or `emergencyQueueId` in the deployed `config.js`, or in the header's layout properties. There is no built-in queue.
+- [ ] Configure the wrap-up code ID and name before using one-click transfer and answer.
+- [ ] Follow [the emergency header deployment guide](src/EMERGENCY-HEADER.md).
