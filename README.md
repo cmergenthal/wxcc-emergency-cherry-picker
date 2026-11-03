@@ -1,4 +1,6 @@
-# WxCC Voice Cherry Picker — PHP + JSON storage
+# WxCC Emergency Cherry Picker
+
+Independent project with the full Cherry Picker widget, compact `cmergentEmergency` header widget, PHP backend, and JSON file storage. See [the emergency header guide](src/EMERGENCY-HEADER.md), [deployment checklist](SETUP-CHECKLIST.md), and [source attribution](NOTICE.md).
 
 ## Use Case Overview
 
@@ -55,12 +57,13 @@ Only upload the **contents of `src/dist/`**. Do not upload the source checkout o
 ### 1. Build locally
 
 ```bash
-cd /Users/cmergent/Documents/Widgets/wxcc-voice-cherry-picker/playbooks/wxcc-voice-cherry-picker/src
+git clone https://github.com/cmergenthal/wxcc-emergency-cherry-picker.git
+cd wxcc-emergency-cherry-picker/src
 npm ci
 npm run build
 ```
 
-Upload `dist/` contents into your desired HTTPS folder, for example `https://example.com/cherry-picker/`. A built package is already present from this refactor.
+Upload `dist/` contents into your desired HTTPS folder, for example `https://example.com/cherry-picker/`. Build output is generated locally and is not committed to this repository.
 
 ### 2. Configure public settings
 
@@ -200,7 +203,7 @@ While not ready, play a hold segment and poll again using the returned `attempt`
 - Call discovery uses the inherited 10-minute Tasks query window. Long-waiting tasks and pagination need validation against your tenant/workload.
 - The upstream Conference/Merge integration accesses internal Calling SDK objects. It stays optional and disabled by default. This PHP refactor does not supply missing tenant telephony configuration.
 - The bundle includes the Desktop SDK and produces webpack size advisory warnings (~341 KiB). It compiles successfully.
-- Adapted from [WebexPlaybooks](https://github.com/webex/WebexPlaybooks/tree/main/playbooks/wxcc-voice-cherry-picker) and [wxsd-sales/wxcc-voice-cherry-picker](https://github.com/wxsd-sales/wxcc-voice-cherry-picker). See the repository MIT license. This is a demonstration, not a production-hardening claim.
+- Adapted from [WebexPlaybooks](https://github.com/webex/WebexPlaybooks/tree/main/playbooks/wxcc-voice-cherry-picker) and [wxsd-sales/wxcc-voice-cherry-picker](https://github.com/wxsd-sales/wxcc-voice-cherry-picker). See [LICENSE](LICENSE), the preserved [upstream MIT license](licenses/wxcc-voice-cherry-picker-MIT.txt), and [NOTICE.md](NOTICE.md). This is a demonstration, not a production-hardening claim.
 
 ### Validation
 

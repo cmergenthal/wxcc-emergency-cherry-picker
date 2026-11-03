@@ -75,22 +75,22 @@ categories:
 # -----------------------------------------------------------------------------
 # company_name — Your company or team name
 # -----------------------------------------------------------------------------
-company_name: "Webex for Developers"
+company_name: "cmergenthal"
 
 # -----------------------------------------------------------------------------
 # company_url — Your company or project URL
 # -----------------------------------------------------------------------------
-company_url: "https://developer.webex.com"
+company_url: "https://github.com/cmergenthal/wxcc-emergency-cherry-picker"
 
 # -----------------------------------------------------------------------------
 # support_url — Issues or support link (e.g. GitHub issues)
 # -----------------------------------------------------------------------------
-support_url: "https://github.com/webex/webexplaybooks/issues"
+support_url: "https://github.com/cmergenthal/wxcc-emergency-cherry-picker/issues"
 
 # -----------------------------------------------------------------------------
 # product_url — Link to this Playbook in the repo (required)
 # -----------------------------------------------------------------------------
-product_url: "https://github.com/webex/webexplaybooks/tree/main/playbooks/wxcc-voice-cherry-picker"
+product_url: "https://github.com/cmergenthal/wxcc-emergency-cherry-picker"
 
 # -----------------------------------------------------------------------------
 # logo — (Optional) URL to your logo image. If not provided, defaults to the

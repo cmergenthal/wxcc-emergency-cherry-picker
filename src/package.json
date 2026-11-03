@@ -1,5 +1,5 @@
 {
-  "name": "cc-cherry-picker",
+  "name": "wxcc-emergency-cherry-picker",
   "version": "1.0.0",
   "description": "Webex Contact Center Web Component with PHP and JSON file storage",
   "scripts": {
@@ -9,7 +9,7 @@
   },
   "keywords": [],
   "author": "Taylor Hanson",
-  "license": "MIT",
+  "license": "SEE LICENSE IN ../LICENSE",
   "type": "module",
   "dependencies": {
     "@wxcc-desktop/sdk": "3.0.1",
@@ -22,10 +22,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/wxsd-sales/cc-meeting-transfer-widget.git"
+    "url": "git+https://github.com/cmergenthal/wxcc-emergency-cherry-picker.git"
   },
   "bugs": {
-    "url": "https://github.com/wxsd-sales/cc-meeting-transfer-widget/issues"
+    "url": "https://github.com/cmergenthal/wxcc-emergency-cherry-picker/issues"
   },
-  "homepage": "https://github.com/wxsd-sales/cc-meeting-transfer-widget#readme"
+  "homepage": "https://github.com/cmergenthal/wxcc-emergency-cherry-picker#readme"
 }

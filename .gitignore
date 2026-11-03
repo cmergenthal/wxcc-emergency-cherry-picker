@@ -1,0 +1,24 @@
+# Local dependencies and generated packages
+node_modules/
+dist/
+build/
+coverage/
+
+# Credentials and private runtime data
+.env
+.env.local
+.env.*.local
+config.local.php
+private/
+data/
+*.json.lock
+
+# Local tooling
+.DS_Store
+.vscode/
+.idea/
+*.log
+*.tmp
+*.temp
+__pycache__/
+*.py[cod]
