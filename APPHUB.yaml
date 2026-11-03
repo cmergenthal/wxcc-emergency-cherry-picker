@@ -28,9 +28,9 @@ description: |
 
   **How it works:**
   - A WxCC Flow HTTP Request node sends caller metadata (ANI, DNIS, InteractionId)
-    to a lightweight Node.js/Express server on each new inbound call
-  - The server caches call data and pushes real-time updates to the Agent Desktop
-    widget via Socket.io
+    to a lightweight PHP endpoint on each new inbound call
+  - The server stores call metadata in private JSON files; the Agent Desktop
+    widget retrieves it through HTTP polling
   - Agents view a live list of queued callers with ANI/DNIS context and click to
     claim a call using the WxCC Tasks Assignment API
 
@@ -38,14 +38,14 @@ description: |
   - Webex Contact Center org with admin access
   - Service Queue and Multimedia Profile updated via API to enable manuallyAssignable
   - Public HTTPS server to receive webhook callbacks from the WxCC Flow
-  - Node.js ≥ 21.5 or Docker
+  - PHP 8.1+ with cURL and a writable private storage directory
 
   **What's included:**
-  - Node.js server (Express + Socket.io) for call caching and real-time push
+  - PHP endpoints with locked JSON file storage for caller and transfer metadata
   - Frontend widget source (`@wxcc-desktop/sdk`) with webpack build pipeline
   - Importable WxCC Flow (GenericCherryPickerFlow.json)
   - Agent Desktop layout JSON (cherryPickerWidget.json)
-  - Docker support for containerized deployment
+  - Static deployment bundle and runtime configuration for PHP hosting
 
 # -----------------------------------------------------------------------------
 # product_types — Where this Playbook appears. Pick one or more.

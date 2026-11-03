@@ -105,7 +105,7 @@
               "children": [
                 {
                   "comp": "sa-ds-voice-sdk",
-                  "script": "https://<YOUR_HOST_URI>/build/bundle.js",
+                  "script": "https://spark.chasemergenthal.com/cherry-picker/build/bundle.js?v=queue-transfer-7",
                   "wrapper": {
                     "title": "Cherry Picker",
                     "maximizeAreaName": "app-maximize-area"

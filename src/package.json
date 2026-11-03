@@ -1,31 +1,24 @@
 {
   "name": "cc-cherry-picker",
   "version": "1.0.0",
-  "description": "transfer a call to a webex sip meeting.",
-  "main": "index.js",
+  "description": "Webex Contact Center Web Component with PHP and JSON file storage",
   "scripts": {
-    "build": "webpack",
-    "dev": "nodemon index.js",
-    "start": "node index.js"
+    "build": "webpack && node scripts/package.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:php": "php tests/storage.php"
   },
   "keywords": [],
   "author": "Taylor Hanson",
   "license": "MIT",
   "type": "module",
   "dependencies": {
-    "@wxcc-desktop/sdk": "^1.2.10",
+    "@wxcc-desktop/sdk": "3.0.1",
     "babel-loader": "^8.2.5",
-    "cors": "^2.8.5",
-    "express": "^4.18.1",
-    "socket.io": "^4.8.1",
-    "ttl-mem-cache": "^4.1.0",
     "webpack": "^5.72.1",
     "webpack-cli": "^4.9.2"
   },
   "devDependencies": {
-    "@wxcc-desktop/sdk-types": "^1.0.3",
-    "dotenv": "^16.0.1",
-    "dotenv-webpack": "^8.1.0"
+    "@wxcc-desktop/sdk-types": "^1.0.3"
   },
   "repository": {
     "type": "git",

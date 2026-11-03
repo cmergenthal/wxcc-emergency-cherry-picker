@@ -1,188 +1,214 @@
-# WxCC Voice Cherry Picker + Webex Contact Center Integration
-
-This Playbook is adapted from the [wxcc-voice-cherry-picker](https://github.com/wxsd-sales/wxcc-voice-cherry-picker) sample on GitHub.
+# WxCC Voice Cherry Picker — PHP + JSON storage
 
 ## Use Case Overview
 
-In most Webex Contact Center deployments, voice calls are distributed to agents automatically via round-robin or longest-available routing. This works well for general queues, but breaks down for scenarios that require deliberate assignment — VIP customer handling, language-matched routing, scheduled callback fulfillment, or skills-based triage where agents need to see who is calling before accepting.
+A Webex Contact Center Agent Desktop Web Component (`sa-ds-voice-sdk`) lists voice tasks and lets agents claim a selected call. Optional Conference/Merge retains the sample's Webex Calling integration and adds persistent hold/merge state.
 
-The WxCC Voice Cherry Picker solves this by replacing automatic distribution with **agent-driven call selection**. When a call enters the queue, its metadata (ANI, DNIS, caller name from SIP headers) appears immediately in a custom Agent Desktop widget. Agents can review the caller list, select a specific call to claim, and — if they are already on a call — conference in the queued caller using a two-step transfer-and-merge flow.
-
-**Target persona:** WxCC administrators and contact center developers who want to give agents more control over which calls they handle.
-
-**Estimated implementation time:** 4–8 hours.
+This local version replaces Express, Socket.io, and the in-memory cache with PHP endpoints and two private JSON files. It is intended for a small deployment on one PHP webserver. Allow time for tenant setup and live call testing; those steps cannot be completed by building the widget alone.
 
 ## Architecture
 
-The integration is composed of four parts that work together:
+- Your webserver serves the JavaScript bundle, runtime `config.js`, and images.
+- The inbound Webex Flow posts caller metadata to `api/webhook.php` with an `X-Webhook-Secret` header.
+- The widget polls the Webex Tasks API every five seconds and fetches missing caller metadata from `api/caller-ids.php`. Failed/missing enrichment is retried without blocking the task list.
+- `callers.json` and `transfers.json` live outside the public document root. Every operation takes a stable lock, removes expired records, and writes changes through a temporary file and rename. Corrupt data produces an error rather than being overwritten.
+- Agent-facing PHP endpoints validate the agent bearer token with Webex `GET /v1/people/me` and check organization membership. Tokens are not stored. This requires the Desktop token to support that API; verify it in your tenant.
+- Webex remains responsible for call assignment. JSON files store metadata and transfer coordination, not ownership of the actual Webex task.
 
-1. **WxCC Flow (Flow Builder)** — An HTTP Request node fires a POST to the Cherry Picker server on every `NewPhoneContact` event, forwarding ANI, DNIS, InteractionId, OrgId, and SIP headers before routing the call to the queue.
-
-2. **Cherry Picker Server (Node.js / Express + Socket.io)** — A lightweight server that receives the flow webhook, caches call metadata keyed by `InteractionId` (TTL 1 hour), and pushes the data in real time to all connected widget clients via Socket.io rooms scoped to `OrgId`. It also exposes a `/callerIds` endpoint so the widget can look up cached caller data when it polls the Tasks API on a 5-second interval.
-
-3. **Cherry Picker Widget (Frontend / `@wxcc-desktop/sdk`)** — A custom Web Component (`sa-ds-voice-sdk`) built on the WxCC Agent Desktop SDK. It connects to the server via Socket.io, shows a filterable live list of queued calls with ANI/DNIS context, and presents either a **Claim** button (when the agent is idle) or a **Conference** button (when the agent is already on a call). The widget is bundled with webpack and loaded as a custom script in the Agent Desktop layout.
-
-4. **WxCC Tasks API** — The widget uses the agent's OAuth access token (surfaced by `@wxcc-desktop/sdk`) to call `GET /v1/tasks` every 5 seconds to reconcile the task list, and `POST /v1/tasks/{taskId}/assign` to claim a selected call.
-
-See the architecture diagram in [/diagrams/architecture-diagram.md](diagrams/architecture-diagram.md).
+See [the diagram](diagrams/architecture-diagram.md).
 
 ## Prerequisites
 
-**Webex Contact Center:**
-- WxCC org with administrator access in Control Hub
-- At least one configured Entry Point, Queue, and Flow
-- Service Queue updated via API to set `"manuallyAssignable": true` — there is no Control Hub UI for this; it must be done with the WxCC REST API (e.g., via Postman or Bruno)
-- Multimedia Profile (MMP) for the target agent team updated via API to set `"manuallyAssignable": { "telephony": 1 }` — same API-only requirement
-
-**Server infrastructure:**
-- A publicly accessible HTTPS server to host the Cherry Picker server (the WxCC Flow HTTP Request node cannot reach `localhost`)
-- A valid SSL/TLS certificate on that server (required by the Agent Desktop widget's Content Security Policy)
-- Port availability as configured in `PORT` (default 5000)
-
-**Developer environment:**
-- Node.js ≥ 21.5, or Docker
-- npm (comes with Node.js)
-
-**Agent Desktop:**
-- Access to the WxCC Administration Portal to upload a custom Desktop Layout JSON
-- The agent team must be assigned the layout that includes the Cherry Picker widget
+- PHP 8.1+ with JSON and cURL, outbound HTTPS to `webexapis.com`, and a writable private directory on a local filesystem supporting `flock` and atomic rename. Use a currently supported PHP release on the host.
+- HTTPS hosting reachable from both Agent Desktop and the Webex Flow. No Node server, Docker, SQL, WebSocket server, Composer, or background worker is required.
+- Node/npm on the build machine only. This package was built locally with Node 18.19.0; use an LTS Node release for ongoing development.
+- WxCC administrator access, a test entry point/number, queue, agent/team, and multimedia profile allowing manual telephony assignment.
+- A server-only random webhook secret (at least 32 characters).
+- For Conference/Merge: a valid wrap-up code, a hold destination, and a hold/return flow able to correlate the **original transfer task ID**. The agent's Webex Calling service must provide the call events used by the sample.
 
 ## Code Scaffold
 
-All runnable source code lives in `/src/`. The structure mirrors the upstream repo:
-
-```
+```text
 src/
-├── index.js                        Entry point: Express + Socket.io server
-├── package.json                    Dependencies and npm scripts
-├── webpack.config.cjs              Webpack config — bundles src/widget-SDK-Voice.js → src/build/bundle.js
-├── Dockerfile                      Containerized deployment (Node 21.5)
-├── cherryPickerWidget.json         Agent Desktop layout JSON — upload to WxCC Administration Portal
-├── env.template                    Required environment variables (rename to .env before running)
-├── flow/
-│   └── GenericCherryPickerFlow.json    Importable WxCC Flow — HTTP Request → Queue → Hold music loop
-└── src/
-    ├── widget-SDK-Voice.js         Frontend Web Component: task list, Claim/Conference/Merge logic
-    ├── socket.io.min.js            Vendored Socket.io client (served statically by the Express server)
-    └── img/
-        └── loading-1.gif           Loading indicator used by the widget
+  widget-SDK-Voice.js       Existing Web Component and Desktop SDK integration
+  transport.js             Authenticated PHP requests and late metadata handling
+  public/config.js         Public runtime settings; no secrets
+  api/
+    config.example.php     Copy to config.local.php on the server if needed
+    common.php             Input validation, CORS, Webex identity verification
+    store.php              Locked JSON transactions and expiration cleanup
+    webhook.php            Flow caller-metadata POST
+    caller-ids.php          Widget metadata lookup POST
+    transfer-state.php      Widget hold/merge POST
+    transfer-hold.php       Hold-flow readiness POST
+  scripts/package.mjs      Packages public files into dist/
+  tests/                   Storage, HTTP, transport, and component lifecycle checks
+  flow/GenericCherryPickerFlow.json
+  cherryPickerWidget.json
+  dist/                    Built uploadable application (gitignored)
 ```
 
-**`index.js`** — The backend server. Receives call metadata from the WxCC Flow via `POST /`, caches it in a TTL memory store, and emits it to connected clients via Socket.io. Exposes `POST /callerIds` for the widget to resolve ANI/DNIS for task IDs it sees via the Tasks API, and `POST /transfer-hold` for the conference flow's hold-polling logic.
-
-**`src/widget-SDK-Voice.js`** — The frontend Web Component. Uses `@wxcc-desktop/sdk` to access the agent's access token and Desktop event system. Renders an animated card list of queued calls, polls `GET /v1/tasks` every 5 seconds, and shows Claim or Conference buttons based on the agent's current call state. Conference flow: transfers the agent's current call to a hold extension → assigns the cherry-picked call → agent clicks Merge to conference the two calls via `POST /v1/telephony/conference`.
-
-> **Note:** This code is a demonstration. It is not production-hardened. Secrets must remain in environment variables and must never be committed. The `wrapUpTask` function contains a hardcoded `auxCodeId` and the `transferTask` function uses a hardcoded hold extension (`10070`) — both must be updated for your org before use. See the Known Limitations section.
+Only upload the **contents of `src/dist/`**. Do not upload the source checkout or the private data directory. The packager excludes tests, dependencies, local configuration, and private storage.
 
 ## Deployment Guide
 
-### 1. Configure environment variables
-
-> **Docker users:** Skip this step. Pass your values as `--build-arg` flags on the `docker build` command in Step 4a instead.
-
-Copy `src/env.template` to `src/.env`:
+### 1. Build locally
 
 ```bash
-cp src/env.template src/.env
-```
-
-Open `src/.env` and set:
-
-- `PORT` — TCP port for the server (default `5000`)
-- `HOST_URI` — The **public** HTTPS base URL of your server (e.g., `https://cherry-picker.yourcompany.com`). This is injected into the frontend bundle at build time by `dotenv-webpack` and is also used by the flow webhook.
-
-### 2. Update hardcoded org-specific values in the widget
-
-Open `src/src/widget-SDK-Voice.js` and replace the following values specific to the original author's org:
-
-- **`auxCodeId`** (line ~730): Replace `"859de2b3-9767-4b70-b380-cee9785656d5"` with a valid Wrap-Up Code ID from your WxCC org. Retrieve it from the WxCC REST API: `GET /v1/auxiliary-codes`.
-- **Hold extension** (line ~522, passed to `transferTask("10070", ...)`): Replace `"10070"` with a dial number or extension in your org that can accept a transferred call and hold it during the conference setup.
-
-### 3. Build the frontend widget
-
-```bash
-cd src
-npm install
+cd /Users/cmergent/Documents/Widgets/wxcc-voice-cherry-picker/playbooks/wxcc-voice-cherry-picker/src
+npm ci
 npm run build
 ```
 
-This bundles `src/widget-SDK-Voice.js` into `src/build/bundle.js` using webpack. The `HOST_URI` from your `.env` is injected at build time.
+Upload `dist/` contents into your desired HTTPS folder, for example `https://example.com/cherry-picker/`. A built package is already present from this refactor.
 
-### 4a. Run with Docker (recommended)
+### 2. Configure public settings
 
-```bash
-cd src
-docker build --build-arg HOST_URI="https://cherry-picker.yourcompany.com" -t wxcc-voice-cherry-picker .
-docker run -p 5000:5000 wxcc-voice-cherry-picker
+Edit the deployed `config.js` (or `public/config.js` before building):
+
+```js
+window.CHERRY_PICKER_CONFIG = {
+  apiBaseUrl: './api/',
+  wxccApiBaseUrl: 'https://api.wxcc-us1.cisco.com',
+  wrapUpCodeId: '',
+  holdExtension: '',
+  conferenceEnabled: false,
+  pollIntervalMs: 5000
+};
 ```
 
-Replace `https://cherry-picker.yourcompany.com` with your actual `HOST_URI`. If you use a non-default port, also pass `--build-arg PORT=<port>` and update the `-p` flag accordingly.
+The relative API URL resolves against `config.js`, so subfolder hosting works. Change the regional API URL if needed. Runtime changes require a Desktop reload/cache refresh, not a rebuild. Keep Conference disabled until the hold flow and Calling integration are validated.
 
-### 5. Configure the WxCC Queue and Multimedia Profile for manual assignment
+### 3. Configure PHP and private storage
 
-These changes must be made via the WxCC REST API (Postman, Bruno, or equivalent). There is no Control Hub UI for these fields.
+Set these server environment variables through your hosting configuration:
 
-**a. Update the Service Queue:**
-```
-GET  https://api.wxcc-us1.cisco.com/v1/queues/{queueId}
-PUT  https://api.wxcc-us1.cisco.com/v1/queues/{queueId}
-     Add: "manuallyAssignable": true
-```
-
-**b. Update the Multimedia Profile:**
-```
-GET  https://api.wxcc-us1.cisco.com/v1/multimedia-profiles/{mmProfileId}
-PUT  https://api.wxcc-us1.cisco.com/v1/multimedia-profiles/{mmProfileId}
-     Add: "manuallyAssignable": { "telephony": 1, "chat": 0, "email": 0, "social": 0 }
+```text
+CHERRY_PICKER_ORG_ID=your-wxcc-organization-uuid
+CHERRY_PICKER_STORAGE_DIR=/home/your-account/private/cherry-picker
+CHERRY_PICKER_WEBHOOK_SECRET=a-random-secret-at-least-32-characters-long
 ```
 
-### 6. Import the WxCC Flow
+Generate a secret locally with `php -r 'echo bin2hex(random_bytes(32)), PHP_EOL;'` and store it only in your PHP hosting environment and the Webex Flow's protected credential configuration.
 
-1. In Control Hub, navigate to **Contact Center > Flows**.
-2. Import `src/flow/GenericCherryPickerFlow.json`.
-3. Open the imported flow in Flow Builder.
-4. Locate the **HTTPRequest** node. Update `httpRequestUrl` from `https://{{HOSTNAME}}` to your actual server URL, or update the flow variable `HOSTNAME` to your server's hostname.
-5. Verify the **Queue** node points to your target queue.
-6. Publish the flow and assign it to the Entry Point.
+If you need to change CORS or TTL settings, copy deployed `api/config.example.php` to `api/config.local.php` and edit it. `org_id` and `storage_dir` can also be set there; keep the secret supplied through `getenv`. The PHP process must be able to create/write the private directory. Never put JSON files under `public_html`, `htdocs`, or the application's public folder. The backend refuses storage under its detected document root.
 
-<!-- TODO: verify this step against your specific environment — queue IDs and entry point names will differ -->
+Set `allowed_origins` to your actual Agent Desktop origin. Ensure the host forwards the `Authorization` header to PHP (some Apache/FastCGI configurations need that enabled). Each metadata/state request verifies the bearer token with Webex. A 401 means token/header issues; 403 means organization or origin mismatch; 503 means the Webex identity service could not be used; 500 means configuration/storage failure.
 
-### 7. Wire up the Agent Desktop layout
+For Apache hosts such as DreamHost, upload the hidden `dist/api/.htaccess` file to `cherry-picker/api/.htaccess`. It sets `CGIPassAuth On` so PHP receives the Authorization header. If that server file already exists, add the directive to it instead of replacing its other settings. See [Apache CGIPassAuth documentation](https://httpd.apache.org/docs/2.4/mod/core.html#cgipassauth). An `Agent bearer token required` response means PHP did not receive an acceptable bearer header; check whether the failed browser request includes `Authorization: Bearer …` without sharing the token. This differs from `Webex rejected agent credentials`, which means the identity check rejected the supplied token.
 
-1. Open `src/cherryPickerWidget.json`.
-2. On the line containing `"script": "https:// /build/bundle.js"`, replace `https:// ` with your `HOST_URI` (e.g., `"script": "https://cherry-picker.yourcompany.com/build/bundle.js"`).
-3. In the WxCC Administration Portal, navigate to **Desktop Layout** and upload the updated `cherryPickerWidget.json`.
-4. Assign the layout to the agent team.
+### 4. Configure manual assignment
 
-### 8. Verify
+Read/save the existing queue and effective multimedia profile. Enable the queue's `manuallyAssignable` flag and set the profile's manual telephony capacity to 1, preserving other media settings. Apply the profile to the test agent/team and confirm queue access. Use the current regional API documentation for full update bodies.
 
-1. Log in as an agent on the assigned team at [https://desktop.wxcc-us1.cisco.com](https://desktop.wxcc-us1.cisco.com).
-2. Navigate to the **Cherry Picker** tab in the left navigation.
-3. Place a test call to the Entry Point configured in Step 6.
-4. Confirm the call appears in the widget with ANI/DNIS metadata.
-5. Click **Claim** to verify the call is delivered to the agent.
+Webex's [Cherry-Pick Voice Tasks guide](https://developer.webex.com/blog/cherry-pick-voice-tasks-in-webex-contact-center) explains the queue and profile requirement.
+
+### 5. Import the inbound flow
+
+Import `flow/GenericCherryPickerFlow.json`, choose your queue and prompts, and set the HTTP Request URL to:
+
+```text
+https://example.com/cherry-picker/api/webhook.php
+```
+
+The template uses `https://{{HOSTNAME}}/api/webhook.php`; replace the complete URL for subfolder hosting. Add the HTTP header `X-Webhook-Secret` using your configured secret. This header is not embedded in the downloadable flow file. Preserve `InteractionId`, `OrgId`, `ANI`, `DNIS`, and `Headers` in the JSON body. If raw SIP provider quotes produce malformed JSON, use text/plain with the sample body; PHP applies its compatibility normalization only to that fallback format.
+
+Validate, publish, and assign the flow to your entry point/inbound routing. Confirm the webhook returns HTTP 200.
+
+### 6. Install the Web Component
+
+In `cherryPickerWidget.json`, set the widget script to:
+
+```text
+https://example.com/cherry-picker/build/bundle.js
+```
+
+Upload/merge the layout and assign it to the test team. Preserve the `accessToken` and `outdialEp` property bindings. Sign out/in and open Cherry Picker. Verify bundle/config/image loading, successful Tasks requests, and successful PHP metadata requests.
+
+### 7. Test Claim
+
+Call the test number, wait for the next poll, and claim the call as an eligible agent. Verify caller details, delivery, wrap-up, and two-agent contention. Metadata arriving after initial task discovery should appear on a later poll. A PHP metadata outage should show an error while leaving task discovery and Claim available.
+
+### Browser/WebRTC answering (SDK 3.0.1)
+
+The widget now uses Desktop SDK 3.0.1 and awaits SDK initialization. After a successful Claim, it shows **Accept browser call**. Click this when the call arrives; the widget checks that the claimed ID is the single current voice task in Desktop, then calls `Desktop.actions.acceptWebRtcCall()`.
+
+The installed SDK dispatches `ax-web-call-answer`; it does not return confirmation that audio connected. The UI reports the answer request and asks you to confirm the native call timer/audio. If the claimed task is missing or multiple voice tasks are present, no answer request is sent. The control expires after 60 seconds and is cleared on end/wrap-up or widget removal. It does not automatically answer on Claim.
+
+Upload the updated `dist/build/bundle.js` only, preserve your deployed PHP configuration, and use `https://spark.chasemergenthal.com/cherry-picker/build/bundle.js?v=webrtc-sdk-3-1` in the Desktop layout to bypass the older cached bundle. Browser answering is enabled unless runtime config explicitly sets `webRtcEnabled: false`. Keep Conference disabled during this test. This migration uses the supported `Desktop.actions.getToken()` for task/metadata requests.
+
+Local tests cover the answer guards and the installed SDK's dispatched event; live WebRTC audio and native Desktop behavior remain to be verified in your tenant.
+
+### Minimal emergency header
+
+The separate `cmergent-emergency-header` Web Component displays the newest waiting contact from `cmergentEmergency`. One click returns the current call to its original queue, completes configured wrap-up, claims the selected emergency contact and requests WebRTC answer when that exact offer arrives. It also works when no call is active. The compact **Accept** fallback retries browser answer when a browser gesture is required. See [header deployment and configuration](src/EMERGENCY-HEADER.md) and the [Desktop layout fragment](src/emergency-header-layout.json). The build produces `dist/build/emergency-header.js` alongside the existing bundle. Live audio and transfer verification in your tenant is required.
+
+### Transfer the active call to a selected queue and pick another
+
+While the agent has a voice task, the widget shows **Send active call to** and loads the agent's voice queues through `Desktop.agentContact.vteamList` using the signed-in agent's profile and session. The widget reads the nested SDK response and filters out digital queues and entry points. Select a queue, then click **Transfer & pick** beside the queued caller you want next.
+
+The widget verifies the active task and picked call, then calls `Desktop.agentContact.vteamTransferV2` with the selected queue ID and `destinationType: 'queue'`. Only a confirmed `AgentVteamTransferred` response proceeds. It waits for the old voice task to leave Desktop, including any wrap-up you must complete in the native interface (up to 90 checks, one second apart). It rechecks the picked call and available voice task slot, claims the call, and shows the existing **Accept browser call** control. It never automatically answers.
+
+No hold extension, PHP changes, or Conference setup is required. Queue access and transfer permissions are determined by Webex. If no queues appear, check the agent's Desktop profile queue permissions and use **Refresh queues**. Queue IDs come from the Desktop queue list.
+
+Runtime `config.js` is requested with a fresh query parameter on each page load so long-lived host JavaScript caching does not hide configuration changes. Reload Agent Desktop after editing config.
+
+To complete wrap-up automatically for **Transfer & pick**, add these settings to your existing hosted `config.js`:
+
+```js
+autoWrapUpOnTransfer: true,
+wrapUpCodeId: 'YOUR_WRAP_UP_CODE_ID',
+transferWrapUpReason: 'EXACT_WRAP_UP_CODE_NAME',
+```
+
+Use a wrap-up code available to this agent that accurately describes the transfer. Configuration is checked before transferring. After transfer confirmation, the widget waits for the original task's wrap-up state or its `eAgentWrapup` event, submits `Desktop.agentContact.wrapupV2` once, requires `AgentWrappedUp`, and still waits for the old task to clear before claiming. If native auto wrap-up already removed the task, no wrap-up request is sent. A failed or timed-out wrap-up stops the sequence with instructions to finish manually; it is never retried automatically. Without `autoWrapUpOnTransfer: true`, existing manual wrap-up behavior remains. See [SDK wrapupV2](https://developer.webex.com/webex-contact-center/docs/desktop). Upload the new bundle and edit your existing config rather than overwriting other host-specific settings.
+
+A successful transfer cannot be undone by this widget. If the picked call disappears, another voice task arrives, wrap-up remains unfinished, or Claim fails, the first caller remains transferred and the UI reports why the sequence stopped. Calls are not reserved between verification and Claim; Webex remains the authority on assignment. A timed-out transfer is not retried automatically.
+
+Successful queue lists are retained in page memory for up to 30 minutes for the current bearer identity. This allows a recreated component to keep displaying queues when answering a call clears the Desktop queue cache and the SDK has no session ID. A changed bearer token, known profile/session change, confirmed empty queue response, or rejected queue request prevents reuse. A full page reload clears this fallback; transfer authorization remains enforced by Webex.
+
+SDK 3.0.1 may leave `latestData.agentSessionId` empty when the widget loads after sign-in. The widget also captures session IDs from the documented agent state/relogin events, including `eAgentChannelStateChanged`. If the session ID is missing, finish the current call and wrap-up, then manually change voice availability with this widget loaded and refresh queues. The widget never changes agent availability automatically. See the [Desktop SDK event documentation](https://developer.webex.com/webex-contact-center/docs/desktop).
+
+Deployment: replace only `build/bundle.js` and set the Desktop layout URL to `https://spark.chasemergenthal.com/cherry-picker/build/bundle.js?v=queue-transfer-7`. Preserve your existing server configuration and `config.js`. Live queue-transfer and audio testing in your tenant remains required.
+
+### 8. Configure optional Conference/Merge
+
+Set `holdExtension`, `wrapUpCodeId`, and `conferenceEnabled: true` after completing the hold flow. The widget awaits PHP's successful `transfer-state.php` response before transferring the current call, wrapping it up, and claiming the new call. Merge saves `ready: true` through the same PHP endpoint.
+
+The hold flow must POST to `api/transfer-hold.php` with `X-Webhook-Secret`:
+
+```json
+{ "transferTaskId": "ORIGINAL-WXCC-INTERACTION-ID", "attempt": 0 }
+```
+
+Example response:
+
+```json
+{ "ready": false, "timedOut": false, "found": true, "attempt": 1, "agentNumber": "1000" }
+```
+
+While not ready, play a hold segment and poll again using the returned `attempt`. When ready and an agent number is present, return the held call to that number. After the configured maximum attempts (default 5), an existing record becomes ready for fallback return. A missing/expired record never returns ready: if `timedOut` is true with `found` false, follow a deliberate fallback route instead of continuing indefinitely.
+
+**The supplied JSON is the inbound queue flow, not the hold/return flow.** Correlation must carry the original task ID into your hold flow; a new contact's ID may differ. Phone-number-only lookup is intentionally absent because simultaneous calls from one number could return to the wrong agent. Configure that correlation in your tenant and test it before enabling Conference. The existing browser Calling event/conference logic remains dependent on the Desktop SDK internals used by the upstream sample.
 
 ## Known Limitations
 
-**Hardcoded org-specific values in the widget source:**
-- `wrapUpTask` uses a hardcoded Wrap-Up Code `auxCodeId` specific to the original author's org. This will fail silently in any other org unless updated (Step 2 of the Deployment Guide).
-- `transferTask` uses hardcoded hold extension `"10070"`. Replace with a valid dial number in your org for the conference flow to work.
+- Local tests pass; no live Webex tenant, credentials, hold destination, or hosting account was supplied, so live authentication, flow import, Claim, and Conference are not certified by these tests.
+- The backend authenticates organization membership; it does not independently enforce per-queue caller-metadata permissions. It returns only explicitly requested task IDs. Webex enforces actual task assignment permissions.
+- Flat-file storage is for a single server with modest traffic. Operations serialize per file; use a different storage layer for multiple hosts or higher sustained load.
+- Expired records are removed on the next request to their store. No background cleanup runs when the app is idle.
+- Call discovery uses the inherited 10-minute Tasks query window. Long-waiting tasks and pagination need validation against your tenant/workload.
+- The upstream Conference/Merge integration accesses internal Calling SDK objects. It stays optional and disabled by default. This PHP refactor does not supply missing tenant telephony configuration.
+- The bundle includes the Desktop SDK and produces webpack size advisory warnings (~341 KiB). It compiles successfully.
+- Adapted from [WebexPlaybooks](https://github.com/webex/WebexPlaybooks/tree/main/playbooks/wxcc-voice-cherry-picker) and [wxsd-sales/wxcc-voice-cherry-picker](https://github.com/wxsd-sales/wxcc-voice-cherry-picker). See the repository MIT license. This is a demonstration, not a production-hardening claim.
 
-**Region hardcoding:**
-- `index.js` sets the Socket.io CORS origin to `https://desktop.wxcc-us1.cisco.com` only. Agents in EU1, EU2, or ANZ1 regions must update this value and the `HOST_URI` variable to match their region's Agent Desktop URL.
-- The widget makes API calls to `https://api.wxcc-us1.cisco.com`. Agents outside US1 must update these endpoints.
+### Validation
 
-**Real-time call notification requires flow configuration:**
-- If the WxCC Flow HTTP Request node is not configured, new calls will only appear in the widget after the 5-second polling interval (not in real time). Skipping Step 6 is possible for testing but degrades the experience.
+```bash
+npm test
+php tests/storage.php
+python3 tests/http_endpoints.py
+npm run build
+```
 
-**Public server required:**
-- The WxCC Flow HTTP Request node cannot contact `localhost`. A publicly accessible HTTPS server with a valid certificate is required for the flow webhook to reach the Cherry Picker server.
-
-**No persistence:**
-- Call metadata is stored in an in-memory TTL cache. Restarting the server clears all cached caller data. Tasks in the WxCC queue are unaffected, but ANI/DNIS enrichment will not be available for calls that arrived before the server started.
-
-**License:**
-This Playbook is adapted from the [wxcc-voice-cherry-picker](https://github.com/wxsd-sales/wxcc-voice-cherry-picker) project, licensed under the [MIT License](../../LICENSE). Review the license terms for commercial use.
-
-**Webex disclaimer:**
-This Playbook is provided as a starting point. Webex does not guarantee the functional accuracy of the source code. Test thoroughly before use in a production environment.
+Storage tests exercise six concurrent writers, TTL cleanup, failed-operation rollback, and corrupt-file preservation. HTTP tests run an actual local PHP server with **mocked upstream Webex identity**, covering auth/CORS/validation, late metadata, ownership, idempotency, and hold behavior. The component test uses a mocked DOM/Desktop SDK to check startup and cleanup without Socket.io or Calling. Live browser/tenant testing remains required.

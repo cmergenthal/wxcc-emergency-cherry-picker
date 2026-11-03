@@ -1,10 +1,50 @@
+import { voiceTasks, loadAvailableTransferQueues, withDeadline, transferThenClaim, configuredTransferWrapup } from './queue-transfer.js';
+import { acceptClaimedWebRtcCall } from './webrtc.js';
 import { Desktop } from "@wxcc-desktop/sdk";
+import { postJson, mergeCallerIds, assignVoiceTask } from './transport.js';
+
+const scriptUrl = document.currentScript?.src;
+const assetBase = scriptUrl ? new URL('../', scriptUrl).href : new URL('./', location.href).href;
+const configUrl = new URL('config.js', assetBase).href;
+let settings;
+const configReady = new Promise((resolve, reject) => {
+  const script = document.createElement('script');
+  // Hosting may cache JavaScript for weeks. Runtime settings must refresh even
+  // when config.js changes independently of the bundle's version.
+  const freshConfigUrl = new URL(configUrl);
+  freshConfigUrl.searchParams.set('_refresh', String(Date.now()));
+  script.src = freshConfigUrl.href;
+  script.onload = () => {
+    const config = window.CHERRY_PICKER_CONFIG;
+    if (!config) return reject(new Error('Missing Cherry Picker configuration'));
+    settings = { ...config, apiBaseUrl: new URL(config.apiBaseUrl || './api/', configUrl).href,
+      pollIntervalMs: Math.max(5000, Number(config.pollIntervalMs) || 5000) };
+    resolve(settings);
+  };
+  script.onerror = () => reject(new Error('Cannot load Cherry Picker config.js'));
+  document.head.appendChild(script);
+});
+// Initialization reports this error in the component, without an unhandled rejection.
+configReady.catch(() => {});
+async function agentToken() {
+  const token = await Desktop.actions.getToken() || currentWidgetInstance?.accessToken;
+  if (!token) throw new Error('Agent Desktop access token is unavailable');
+  return token;
+}
+async function backendPost(endpoint, body) {
+  await configReady;
+  return postJson(new URL(endpoint, settings.apiBaseUrl).href, body, await agentToken());
+}
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+}
 //import Calling from '@webex/calling';
 
 const template = document.createElement("template");
 var loaded = false;
 
 function customLog(msg, args, logNameSuffix){
+  if (!settings?.debug) return;
   let logName = "cc-widget-logger:"
   if(logNameSuffix){
     logName += logNameSuffix + ":";
@@ -273,7 +313,7 @@ template.innerHTML = `
       <div>
         <div id="main-fieldset" class="fieldset">
           <div>
-            <img id="loading-icon" src="${process.env.HOST_URI}/img/loading-1.gif" class="loading-icon"/>
+            <img id="loading-icon" src="${assetBase.replace(/\/$/, "")}/img/loading-1.gif" class="loading-icon"/>
             <div id="queue-content" style="display:none;">
               <div class="checkbox-container">
                 <input class="checkbox-input" type="checkbox" id="queued" name="queued" value="queued" checked>
@@ -290,6 +330,16 @@ template.innerHTML = `
               <div class="checkbox-container">
                 <input class="checkbox-input" type="checkbox" id="completed" name="completed" value="completed" checked>
                 <label for="completed">Completed</label>
+              </div>
+              <p id="claim-status" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;"></p>
+              <button id="webrtc-accept" class="flat-rounded-button" hidden>Accept browser call</button>
+              <p id="webrtc-status" role="status" aria-live="polite" style="white-space:pre-wrap;overflow-wrap:anywhere;"></p>
+              <div id="queue-transfer-panel" hidden style="margin:12px 0;padding:12px;border:1px solid #bbb;border-radius:8px;">
+                <label for="transfer-queue">Send active call to:</label>
+                <select id="transfer-queue" style="max-width:100%;padding:8px;margin:6px;"><option value="">Select a queue</option></select>
+                <button id="refresh-transfer-queues" type="button">Refresh queues</button>
+                <p id="transfer-queue-status" role="status" aria-live="polite"></p>
+                <small>Select a destination, then click “Transfer &amp; pick” beside the call you want next.</small>
               </div>
               <div id="my-queue"></div>
             </div>
@@ -316,7 +366,7 @@ var queueTasks = {};
 var callerIds = {};
 var queueStatuses = ["queued", "assigned", "abandoned", "completed"];
 var agentIsOnCall = false;
-var socket;
+
 var currentCall;
 var previousCall;
 var previousCallNumber;
@@ -353,17 +403,11 @@ function makeStringTime(epochTime){
 async function getCallerIds(taskIds){
   customLog("getCallerIds:");
   customLog(taskIds);
-  const resp = await fetch(`${process.env.HOST_URI}/callerIds`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({
-      taskIds
-    })
-  });
-  customLog(`getCallerIds.status:${resp.status}`);
-  let json = await resp.json();
-  customLog(json);
-  return json;
+  const result = [];
+  for (let start = 0; start < taskIds.length; start += 200) {
+    result.push(...await backendPost('caller-ids.php', { taskIds: taskIds.slice(start, start + 200) }));
+  }
+  return result;
 }
 
 
@@ -378,94 +422,209 @@ class myDesktopSDK extends HTMLElement {
 
     const cookieSDK = document.createElement("script");
     cookieSDK.src = "https://cdn.jsdelivr.net/npm/js-cookie@2/src/js.cookie.min.js";
+    this.cookiesReady = new Promise((resolve, reject) => {
+      cookieSDK.onload = resolve;
+      cookieSDK.onerror = () => reject(new Error('Unable to load cookie helper'));
+    });
+    this.cookiesReady.catch(() => {});
     document.head.appendChild(cookieSDK);
 
-    const socketIOSDK = document.createElement("script");
-    socketIOSDK.src = `${process.env.HOST_URI}/socket.io.min.js`;
-    let self = this;
-    socketIOSDK.onload = function(){
-        customLog("loaded socket.io.min.js");
-        socket = io(process.env.HOST_URI,{
-            withCredentials: true,
-              auth: {
-                "agentId": Desktop.agentContact.SERVICE.conf.profile.agentId,
-                "agentName": Desktop.agentContact.SERVICE.conf.profile.agentName,
-                "agentMailId": Desktop.agentContact.SERVICE.conf.profile.agentMailId,
-                "orgId": Desktop.agentContact.SERVICE.conf.profile.orgId
-              }
-          });
-
-          
-          socket.on('connect', (msg) => {
-            customLog("socket connected!");
-          });
-
-          socket.on('disconnect', (msg) => {
-            customLog("socket disconnected!");
-          });
-
-          socket.on('message', (msg) => {
-            customLog("socket message:");
-            customLog(msg);
-            if(msg.InteractionId){
-              callerIds[msg.InteractionId] = msg;
-              const convertTask = {
-                status: "created", origin: msg.ANI, queue: {name: msg.DNIS},
-                createdTime: Date.now(), lastUpdatedTime: Date.now()
-              }
-              if(!queueTasks.hasOwnProperty(msg.InteractionId)){
-                queueTasks[msg.InteractionId] = convertTask;
-                window.queueTasks = queueTasks;
-              }
-              self.addTask(msg.InteractionId, convertTask);
-            }
-          });
-        customLog("finished loading socket.io")
-    }
-    document.head.appendChild(socketIOSDK);
-
-
+    this.desktopListeners = [];
     this.attachShadow({ mode: "open" });
     this.shadowRoot.appendChild(template.content.cloneNode(true));
+    // Every instance needs its own handler, even when Desktop is already initialized.
+    this.shadowRoot.getElementById('refresh-transfer-queues').onclick = () => this.loadTransferQueues();
     customLog("attached shadow");
     window.shadowRoot = this.shadowRoot;
     this.interactionId = null;
   }
 
+  listen(service, event, handler) {
+    service.addEventListener(event, handler);
+    this.desktopListeners.push({ service, event, handler });
+  }
+
+  showClaimStatus(message, failed = false) {
+    const status = this.shadowRoot.getElementById('claim-status');
+    status.textContent = message;
+    status.style.color = failed ? '#c62828' : 'inherit';
+  }
+
   async claimButtonClick(self, event){
-    try{
-      customLog("claimButtonClicked:");
-      customLog(event);
-      let taskId = event.id.split("-button")[0];
-      const claimButton = this.shadowRoot.getElementById(event.id);
-      const loadingIcon = this.shadowRoot.getElementById(taskId+"-loading");
-      
-      claimButton.style.display = "none";
-      loadingIcon.classList.remove("invisible");
-      customLog(taskId);
-      
-      setTimeout(function(){
-        loadingIcon.classList.add("invisible");
-        try{
-          customLog(`status of ${taskId} after claim:`)
-          customLog(queueTasks[taskId].status);
-          if(["queued", "created"].indexOf(queueTasks[taskId].status) >= 0){
-            claimButton.style.display = agentIsOnCall ? "none" : "inline-block";
-          }
-        }catch(ex){
-          customLog("claimButton Timeout error:");
-          customLog(ex);
-          claimButton.style.display = agentIsOnCall ? "none" : "inline-block";
-        }
-      },10000);
-      await self.assignTask(taskId);
-    }catch(e){
-      customLog("claimButtonClicked Error:");
-      customLog(e);
+    if (self.claimInFlight || self.transferPickInFlight) return;
+    const taskId = event.id.replace(/-button$/, '');
+    const claimButton = this.shadowRoot.getElementById(event.id);
+    const loadingIcon = this.shadowRoot.getElementById(taskId + '-loading');
+    self.claimInFlight = true;
+    self.clearWebRtcAccept();
+    claimButton.disabled = true;
+    loadingIcon?.classList.remove('invisible');
+    self.showClaimStatus('Requesting this call from Webex…');
+    try {
+      const result = await self.assignTask(taskId);
+      self.prepareWebRtcAccept(taskId);
+      self.showClaimStatus(`Webex accepted the Claim request (HTTP ${result.status}). Waiting for call delivery. If it does not arrive, check the queue manual-assignment setting, your multimedia profile’s manual telephony capacity, and agent eligibility.`);
+      await self.getTasks(self);
+    } catch (error) {
+      self.showClaimStatus(error.message, true);
+    } finally {
+      self.claimInFlight = false;
+      claimButton.disabled = false;
+      loadingIcon?.classList.add('invisible');
+    }
+  }
+
+  captureQueueSession(event) {
+    const sessionId = event?.data?.agentSessionId || event?.agentSessionId || Desktop.agentStateInfo.latestData?.agentSessionId;
+    if (typeof sessionId !== 'string' || !sessionId || sessionId === this.queueAgentSessionId) return;
+    const changedSession = this.queueAgentSessionId && this.queueAgentSessionId !== sessionId;
+    this.queueAgentSessionId = sessionId;
+    if (changedSession) {
+      this.transferQueues = [];
+      this.shadowRoot.getElementById('transfer-queue').value = '';
+    }
+    if (this.isConnected) this.loadTransferQueues();
+  }
+
+  async loadTransferQueues() {
+    const status = this.shadowRoot.getElementById('transfer-queue-status');
+    if (this.loadingTransferQueues) {
+      status.textContent = 'Queue lookup is still running. It will time out after 15 seconds if Webex does not respond.';
+      return;
+    }
+    if (this.transferPickInFlight) {
+      status.textContent = 'Wait for Transfer & pick to finish before refreshing queues.';
+      return;
+    }
+    this.loadingTransferQueues = true;
+    const refresh = this.shadowRoot.getElementById('refresh-transfer-queues');
+    refresh.disabled = true;
+    refresh.textContent = 'Refreshing…';
+    const select = this.shadowRoot.getElementById('transfer-queue');
+    status.style.color = 'inherit';
+    status.textContent = 'Loading your voice queues…';
+    try {
+      const ownerToken = await withDeadline(() => agentToken(), 10000, 'Agent identity lookup timed out. Refresh queues to retry.');
+      const queues = await loadAvailableTransferQueues(Desktop, undefined, { agentSessionId: this.queueAgentSessionId, ownerToken });
+      if (!this.isConnected) return;
+      const previous = select.value;
+      select.replaceChildren();
+      const placeholder = document.createElement('option');
+      placeholder.value = ''; placeholder.textContent = 'Select a queue'; select.appendChild(placeholder);
+      for (const queue of queues) {
+        const option = document.createElement('option');
+        option.value = queue.id; option.textContent = queue.name; select.appendChild(option);
+      }
+      this.transferQueues = queues;
+      select.value = queues.some(queue => queue.id === previous) ? previous : '';
+      status.textContent = queues.length ? `Loaded ${queues.length} voice transfer queue${queues.length === 1 ? '' : 's'}. Select a destination queue.` : 'Webex returned no voice transfer queues for this session. If transfer targets are set to All, sign out and back in to Agent Desktop, then refresh.';
+    } catch (error) {
+      status.textContent = error?.message || 'Queue lookup failed without an error description. Reload Agent Desktop and retry.';
+      status.style.color = '#c62828';
+    } finally {
+      this.loadingTransferQueues = false;
+      refresh.disabled = !!this.transferPickInFlight;
+      refresh.textContent = 'Refresh queues';
+    }
+  }
+
+  async checkPickedCall(taskId) {
+    const token = await agentToken();
+    const from = Math.min(Number(queueTasks[taskId]?.createdTime) || Date.now(), Date.now() - 600000) - 1;
+    const response = await withDeadline(() => fetch(`${settings.wxccApiBaseUrl}/v1/tasks?from=${from}`, {
+      headers: { Authorization: `Bearer ${token}` }
+    }), 15000, 'Could not verify the picked call.');
+    if (!response.ok) throw new Error(`Cannot verify the picked call (HTTP ${response.status}).`);
+    const data = await response.json();
+    const task = data.data?.find(row => row.id === taskId)?.attributes;
+    if (!task || !['queued', 'created'].includes(task.status)) throw new Error('The picked call is no longer queued.');
+  }
+
+  async transferAndPick(taskId) {
+    if (this.transferPickInFlight || this.claimInFlight) return;
+    const select = this.shadowRoot.getElementById('transfer-queue');
+    const queue = this.transferQueues?.find(item => item.id === select.value);
+    if (!queue) { this.showClaimStatus('Select a destination queue for the active call first.', true); return; }
+    this.transferPickInFlight = true;
+    select.disabled = true;
+    this.shadowRoot.getElementById('refresh-transfer-queues').disabled = true;
+    this.updateButtonStates(agentIsOnCall);
+    try {
+      const wrapup = configuredTransferWrapup(Desktop, settings);
+      this.transferWrapupTasks = new Set();
+      const getTasks = () => withDeadline(() => Desktop.actions.getTaskMap(), 10000, 'Agent task lookup timed out; check the current call before retrying.');
+      const current = voiceTasks(await getTasks());
+      if (current.length !== 1) throw new Error('Exactly one current voice call is required.');
+      this.clearWebRtcAccept();
+      const result = await transferThenClaim({
+        activeId: current[0].id, pickedId: taskId, queueId: queue.id, getTasks,
+        checkPicked: () => this.checkPickedCall(taskId),
+        transfer: (id, queueId) => withDeadline(() => Desktop.agentContact.vteamTransferV2({
+          interactionId: id, data: { to: queueId, destinationType: 'queue' }
+        }), 30000, 'Transfer confirmation timed out. Check the current call; the picked call was not claimed.'),
+        wrapup, isWrappingUp: id => this.transferWrapupTasks?.has(id),
+        claim: id => this.assignTask(id),
+        onStatus: message => this.showClaimStatus(message),
+        isConnected: () => this.isConnected
+      });
+      this.prepareWebRtcAccept(taskId);
+      this.showClaimStatus(`Active call transferred to ${queue.name}. Webex accepted the picked call (HTTP ${result.status}). Use Accept browser call as usual.`);
+      await this.getTasks(this);
+    } catch (error) { this.showClaimStatus(error.message, true); }
+    finally {
+      this.transferWrapupTasks = null;
+      this.transferPickInFlight = false;
+      select.disabled = false;
+      this.shadowRoot.getElementById('refresh-transfer-queues').disabled = false;
+      this.updateButtonStates(agentIsOnCall);
+    }
+  }
+
+  prepareWebRtcAccept(taskId) {
+    if (settings.webRtcEnabled === false) return;
+    this.webRtcTaskId = taskId;
+    const button = this.shadowRoot.getElementById('webrtc-accept');
+    button.hidden = false;
+    button.disabled = false;
+    button.onclick = () => this.acceptBrowserCall();
+    this.shadowRoot.getElementById('webrtc-status').textContent = 'For Desktop/browser audio: click Accept browser call when the claimed call arrives.';
+    clearTimeout(this.webRtcExpiry);
+    this.webRtcExpiry = setTimeout(() => {
+      this.clearWebRtcAccept();
+      this.shadowRoot.getElementById('webrtc-status').textContent = 'The browser answer window expired. Check the call in Agent Desktop before claiming again.';
+    }, 60000);
+  }
+
+  clearWebRtcAccept() {
+    clearTimeout(this.webRtcExpiry);
+    this.webRtcTaskId = null;
+    this.shadowRoot.getElementById('webrtc-accept').hidden = true;
+    this.shadowRoot.getElementById('webrtc-status').textContent = '';
+  }
+
+  async acceptBrowserCall() {
+    const button = this.shadowRoot.getElementById('webrtc-accept');
+    if (this.webRtcAcceptInFlight) return;
+    this.webRtcAcceptInFlight = true;
+    button.disabled = true;
+    const status = this.shadowRoot.getElementById('webrtc-status');
+    try {
+      await acceptClaimedWebRtcCall(Desktop.actions, this.webRtcTaskId);
+      status.textContent = 'Answer request sent to Agent Desktop. Confirm that the call timer starts and you can hear the caller.';
+    } catch (error) {
+      status.textContent = error.message;
+    } finally {
+      this.webRtcAcceptInFlight = false;
+      button.disabled = false;
     }
   }
 
   async conferenceButtonClick(self, event){
+    if (self.transferPickInFlight || self.claimInFlight) return;
+    if (!settings.conferenceEnabled || !settings.holdExtension || !settings.wrapUpCodeId) {
+      self.updateResultSpan('Configure the hold destination and wrap-up code before conferencing.', 'red');
+      return;
+    }
     try{
       customLog("conferenceButtonClick:");
       customLog(event);
@@ -483,12 +642,12 @@ class myDesktopSDK extends HTMLElement {
           customLog(`status of ${taskId} after conference click:`)
           customLog(queueTasks[taskId].status);
           if(["queued", "created"].indexOf(queueTasks[taskId].status) >= 0){
-            conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
+            conferenceButton.style.display = (agentIsOnCall && settings?.conferenceEnabled) ? "inline-block" : "none";
           }
         }catch(ex){
           customLog("conferenceButton Timeout error:");
           customLog(ex);
-          conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
+          conferenceButton.style.display = (agentIsOnCall && settings?.conferenceEnabled) ? "inline-block" : "none";
         }
       },10000);
       const interaction = await this.getInteraction();
@@ -508,7 +667,7 @@ class myDesktopSDK extends HTMLElement {
         agentNumber: window.agentDetails?.extension,
         direction: interaction.contactDirection
       };
-      socket.emit("message", trackedTransferPayload);
+      await backendPost('transfer-state.php', trackedTransferPayload);
       previousCallNumber = trackNumber;
       
       // Show merge panel
@@ -519,12 +678,11 @@ class myDesktopSDK extends HTMLElement {
         mergeCallerNumber.textContent = trackNumber;
         mergePanel.classList.remove('invisible');
       }
-      await self.transferTask("10070", transferTaskId);
+      await self.transferTask(settings.holdExtension, transferTaskId);
       await self.wrapUpTask(transferTaskId);
       await self.assignTask(taskId);
     }catch(e){
-      customLog("conferenceButtonClick Error:");
-      customLog(e);
+      self.updateResultSpan(e.message, 'red');
     }
   }
 
@@ -563,14 +721,14 @@ class myDesktopSDK extends HTMLElement {
         try{
           callerName = callerIds[taskId].Headers.split("caller_id_name=")[1];
           callerName = callerName.split("}")[0];
-          callerName = `(${callerName})`
+          callerName = `(${escapeHtml(callerName)})`
         } catch(ex){
           customLog('addTask callerId split error:', null, "task-loop");
           customLog(ex, null, "task-loop");
         }
       }
       const row1 = document.createElement("tr");
-      row1.innerHTML = `<td class="column-one origin-cell"><h4><b>${task.origin}</b></h4></td><td><h4>${callerName}</h4></td>`
+      row1.innerHTML = `<td class="column-one origin-cell"><h4><b>${escapeHtml(task.origin)}</b></h4></td><td><h4>${escapeHtml(callerName)}</h4></td>`
       const lastCell = document.createElement("td");
       if(["queued", "created"].indexOf(task.status) >= 0){
         let self = this;
@@ -585,13 +743,21 @@ class myDesktopSDK extends HTMLElement {
           await self.claimButtonClick(self, this)
         });
         lastCell.appendChild(claimButton);
+        const transferPickButton = document.createElement('button');
+        transferPickButton.id = taskId + '-transfer-pick';
+        transferPickButton.classList.add('flat-rounded-button');
+        transferPickButton.textContent = 'Transfer & pick';
+        transferPickButton.style.display = agentIsOnCall ? 'inline-block' : 'none';
+        transferPickButton.disabled = !!this.transferPickInFlight;
+        transferPickButton.addEventListener('click', () => this.transferAndPick(taskId));
+        lastCell.appendChild(transferPickButton);
 
         // Create Conference button
         const conferenceButton = document.createElement("button");
         conferenceButton.id = taskId + "-conference-button";
         conferenceButton.classList.add("flat-rounded-conference-button");
         conferenceButton.innerHTML = "Conference";
-        conferenceButton.style.display = agentIsOnCall ? "inline-block" : "none";
+        conferenceButton.style.display = (agentIsOnCall && settings?.conferenceEnabled) ? "inline-block" : "none";
         conferenceButton.addEventListener('click', async function() {
           await self.conferenceButtonClick(self, this);
         });
@@ -600,7 +766,7 @@ class myDesktopSDK extends HTMLElement {
         // Single loading icon for both buttons
         const loadingImg = document.createElement("img");
         loadingImg.id = taskId+"-loading";
-        loadingImg.src = `${process.env.HOST_URI}/img/loading-1.gif`;
+        loadingImg.src = `${assetBase.replace(/\/$/, "")}/img/loading-1.gif`;
         loadingImg.classList.add("button-loading-icon");
         loadingImg.classList.add("invisible");
         lastCell.appendChild(loadingImg);
@@ -610,7 +776,7 @@ class myDesktopSDK extends HTMLElement {
       table.appendChild(row1);
       
       const row2 = document.createElement("tr");
-      row2.innerHTML = `<td id="${taskId}-status" class="column-one">${capitalizeFirstLetter(task.status)}</td><td>${task.queue.name}</td>`;
+      row2.innerHTML = `<td id="${taskId}-status" class="column-one">${capitalizeFirstLetter(task.status)}</td><td>${escapeHtml(task.queue?.name)}</td>`;
       table.appendChild(row2);
 
       const row3 = document.createElement("tr");
@@ -659,6 +825,8 @@ class myDesktopSDK extends HTMLElement {
         let button = this.shadowRoot.getElementById(taskId+"-button");
         let loadingIcon = this.shadowRoot.getElementById(taskId+"-loading");
         let conferenceButton = this.shadowRoot.getElementById(taskId+"-conference-button");
+        const transferPickButton = this.shadowRoot.getElementById(taskId + '-transfer-pick');
+        if (transferPickButton) transferPickButton.style.display = 'none';
         if(button){
           button.style.display = "none";
         }
@@ -690,6 +858,13 @@ class myDesktopSDK extends HTMLElement {
 
   updateButtonStates(isOnCall){
     agentIsOnCall = isOnCall;
+    this.shadowRoot.getElementById('queue-transfer-panel').hidden = !isOnCall && !this.transferPickInFlight;
+    for (const button of this.shadowRoot.querySelectorAll('[id$="-transfer-pick"]')) {
+      const card = this.shadowRoot.getElementById(button.id.replace(/-transfer-pick$/, ''));
+      button.style.display = isOnCall && card?.dataset.status === 'queued' ? 'inline-block' : 'none';
+      button.disabled = !!this.transferPickInFlight || !!this.claimInFlight;
+    }
+    for (const button of this.shadowRoot.querySelectorAll('[id$="-button"]')) button.disabled = !!this.transferPickInFlight || !!this.claimInFlight;
     
     // Only update buttons on cards that are still queued (active); leave deactivated cards alone
     const confButtons = this.shadowRoot.querySelectorAll('[id$="-conference-button"]');
@@ -699,11 +874,11 @@ class myDesktopSDK extends HTMLElement {
       if (!card || card.dataset.status !== "queued") return; // Deactivated card: don't touch
       const loadingIcon = this.shadowRoot.getElementById(taskId + "-loading");
       if(!loadingIcon || loadingIcon.classList.contains("invisible")){
-        button.style.display = isOnCall ? "inline-block" : "none";
+        button.style.display = (isOnCall && settings?.conferenceEnabled) ? "inline-block" : "none";
       }
     });
     
-    const claimButtons = this.shadowRoot.querySelectorAll('.flat-rounded-button');
+    const claimButtons = this.shadowRoot.querySelectorAll('[id$="-button"]:not([id$="-conference-button"])');
     claimButtons.forEach(button => {
       const taskId = button.id.split("-button")[0];
       const card = this.shadowRoot.getElementById(taskId);
@@ -720,21 +895,21 @@ class myDesktopSDK extends HTMLElement {
   async wrapUpTask(taskId){
     customLog(`wrapUpTask taskId:${taskId}`);
     try{
-      const wrapUpResp = await fetch(`https://api.wxcc-us1.cisco.com/v1/tasks/${taskId}/wrapup`, {
+      const wrapUpResp = await fetch(`${settings.wxccApiBaseUrl}/v1/tasks/${taskId}/wrapup`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${window.myAgentService.webex.token.access_token}`,
+          'Authorization': `Bearer ${await agentToken()}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          "auxCodeId": "859de2b3-9767-4b70-b380-cee9785656d5",
+          "auxCodeId": settings.wrapUpCodeId,
           "wrapUpReason": "Conference"
         })
       });
+      if (!wrapUpResp.ok) throw new Error(`Wrap-up failed (${wrapUpResp.status})`);
       customLog(`wrapUpResp.status:${wrapUpResp.status}`);
     }catch(e){
-      customLog("wrapUpTask Error:");
-      customLog(e);
+      throw e;
     }
   }
 
@@ -742,10 +917,10 @@ class myDesktopSDK extends HTMLElement {
     customLog(`transferTask extension:${extension}`);
     customLog(`transferTask taskId:${taskId}`); 
     try{
-      const transferResp = await fetch(`https://api.wxcc-us1.cisco.com/v1/tasks/${taskId}/transfer`, {
+      const transferResp = await fetch(`${settings.wxccApiBaseUrl}/v1/tasks/${taskId}/transfer`, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${window.myAgentService.webex.token.access_token}`,
+          'Authorization': `Bearer ${await agentToken()}`,
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
@@ -753,45 +928,36 @@ class myDesktopSDK extends HTMLElement {
           "destinationType": "dialNumber"
         })
       });
+      if (!transferResp.ok) throw new Error(`Transfer failed (${transferResp.status})`);
       customLog(`transferResp.status:${transferResp.status}`);
       return taskId;
     }catch(e){
-      customLog("transferTask Error:");
-      customLog(e);
-      return null;
+      throw e;
     }
   }
 
   async assignTask(taskId){
-    try{
-        const assignResp = await fetch(`https://api.wxcc-us1.cisco.com/v1/tasks/${taskId}/assign`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${window.myAgentService.webex.token.access_token}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        customLog(`assignResp.status:${assignResp.status}`);
-    }catch(e){
-      customLog("assignTask Error:");
-      customLog(e);
-    }
+    return assignVoiceTask(settings.wxccApiBaseUrl, taskId, await agentToken());
   }
 
   async getTasks(self){
+    if (self.polling || !self.isConnected) return;
+    self.polling = true;
     try{
         //const pastSeconds = 1800; //1800 seconds = 30 minutes;
         const pastSeconds = 600;
         const fromEpochSeconds = Math.floor(Date.now()) - (pastSeconds * 1000);
-        const tasksResp = await fetch(`https://api.wxcc-us1.cisco.com/v1/tasks?from=${fromEpochSeconds}`, {
+        const tasksResp = await fetch(`${settings.wxccApiBaseUrl}/v1/tasks?from=${fromEpochSeconds}`, {
           method: 'GET',
           headers: {
-            'Authorization': `Bearer ${window.myAgentService.webex.token.access_token}`,
+            'Authorization': `Bearer ${await agentToken()}`,
             'Content-Type': 'application/json'
           }
         });
         customLog(`tasksResp.status:${tasksResp.status}`, null, "task-loop");
+        if (!tasksResp.ok) throw new Error(`Tasks request failed (${tasksResp.status})`);
         let json = await tasksResp.json();
+        if (!self.isConnected) return;
         customLog(json, null, "task-loop");
         let tempTasks = {};
         if(json.data?.length > 0){
@@ -803,11 +969,16 @@ class myDesktopSDK extends HTMLElement {
             }
           }
           if(missingCallerIdTasks.length > 0){
-            let newCallerIds = await getCallerIds(missingCallerIdTasks);
+            let newCallerIds = [];
+            try { newCallerIds = await getCallerIds(missingCallerIdTasks); }
+            catch (error) { self.updateResultSpan(`Caller details: ${error.message}`, 'red'); }
             customLog("newCallerIds:");
             customLog(newCallerIds);
-            for(let j of newCallerIds){
-              callerIds[j.InteractionId] = j;
+            mergeCallerIds(callerIds, newCallerIds);
+            for (const row of newCallerIds) {
+              if (row.found && self.shadowRoot.getElementById(row.InteractionId)) {
+                self.shadowRoot.getElementById(row.InteractionId).remove();
+              }
             }
             window.callerIds = callerIds;
           }
@@ -815,6 +986,7 @@ class myDesktopSDK extends HTMLElement {
           customLog('tempTasks', null, "task-loop");
           customLog(tempTasks, null, "task-loop");
 
+          queueTasks = tempTasks;
           for(let task of Object.keys(tempTasks)){
             let existingCard = self.shadowRoot.getElementById(task)
             if(existingCard){
@@ -841,9 +1013,8 @@ class myDesktopSDK extends HTMLElement {
           }
         }
     } catch(e){
-      customLog('getTasks Error:');
-      customLog(e);
-    }
+      self.updateResultSpan(e.message, 'red');
+    } finally { self.polling = false; }
 
   }
 
@@ -880,7 +1051,7 @@ class myDesktopSDK extends HTMLElement {
 
   async init() {
       customLog("Running Desktop config.init();")
-      Desktop.config.init();
+      await Desktop.config.init({ widgetName: "Cherry Picker", widgetProvider: "Custom" });
       try{
         // ************************** Event listeners ************************** \\
 
@@ -957,7 +1128,7 @@ class myDesktopSDK extends HTMLElement {
 
     async loadContent(){
       try{
-        const checkSeconds = 5
+        const checkSeconds = settings.pollIntervalMs / 1000
         let self = this;
 
         for(let filter of queueStatuses){
@@ -969,25 +1140,29 @@ class myDesktopSDK extends HTMLElement {
 
         // Check if agent is already on a call and set initial state
         const currentTaskMap = await Desktop.actions.getTaskMap();
-        const isOnCall = currentTaskMap.size > 0;
+        if (!self.isConnected) return;
+        const isOnCall = voiceTasks(currentTaskMap).length > 0;
         customLog(`Initial call state - isOnCall: ${isOnCall}`);
         this.updateButtonStates(isOnCall);
 
-        setTimeout(async function(){
-          await self.getTasks(self);
-        }, 100);
-        setInterval(async function(){
+        await self.getTasks(self);
+        if (!self.isConnected) return;
+        clearInterval(this.taskTimer);
+        clearInterval(this.stateTimer);
+        this.taskTimer = setInterval(async function(){
           await self.getTasks(self);
         }, checkSeconds * 1000);
 
         // Periodically check and update button states to stay in sync
-        setInterval(async function(){
+        this.stateTimer = setInterval(async function(){
+          try {
           const currentTaskMap = await Desktop.actions.getTaskMap();
-          const isOnCall = currentTaskMap.size > 0;
+          const isOnCall = voiceTasks(currentTaskMap).length > 0;
           if(isOnCall !== agentIsOnCall){
             customLog(`Button state sync - updating to ${isOnCall}`);
             self.updateButtonStates(isOnCall);
           }
+          } catch (error) { self.updateResultSpan(error.message, 'red'); }
         }, 1000); // Check every second
         
         this.showQueueDiv();
@@ -1009,14 +1184,20 @@ class myDesktopSDK extends HTMLElement {
               mergeButton.disabled = false;
             }, 10000);
             
-            // Send socket message with transfer-merge command
+            // Save transfer state with transfer-merge command
             const mergePayload = {
               ...trackedTransferPayload,
               command: "transfer-merge"
             };
             
             customLog("Sending transfer-merge message:", mergePayload);
-            socket.emit("message", mergePayload);
+            try {
+              await backendPost('transfer-state.php', mergePayload);
+              self.updateResultSpan('Merge requested. Waiting for the held call to return.');
+            } catch (error) {
+              self.updateResultSpan(error.message, 'red');
+              mergeButton.disabled = false;
+            }
           });
           customLog("Merge button handler initialized");
         }
@@ -1044,6 +1225,9 @@ class myDesktopSDK extends HTMLElement {
       customLog("connectedCallback")
       // Update the global reference to the current widget instance
       currentWidgetInstance = this;
+      await configReady;
+      await this.cookiesReady;
+      if (!this.isConnected) return;
       await this.init();
       customLog("initResult:");
       customLog(initResult);
@@ -1055,71 +1239,82 @@ class myDesktopSDK extends HTMLElement {
 
         Cookies.get("queued");
 
-        customLog("myINIT webexService", webexService);
+
         customLog("myINIT:", Desktop.agentContact)
         //customLog("myINIT accessToken:", Desktop.agentContact.SERVICE.webex.accessToken);
         
         window.myAgentService = Desktop.agentContact.SERVICE;
         window.ccDesktop = Desktop;
         window.lastBroadworksId = null;
-        Desktop.agentContact.SERVICE.webex.fetchPersonData("me").then(resp => {
-          customLog('Desktop.agentContact.SERVICE.webex.fetchPersonData("me")', resp);
-          if(resp.phoneNumbers){
-            for (let n of resp.phoneNumbers){
-              if(n.type.indexOf("extension") >= 0){
-                resp.extension = n.value;
-              }
-            }
-          }
-          window.agentDetails = resp;
+        if (settings.conferenceEnabled) {
+          fetch('https://webexapis.com/v1/people/me', { headers: { Authorization: `Bearer ${await agentToken()}` } })
+            .then(response => { if (!response.ok) throw new Error('Cannot read agent extension'); return response.json(); })
+            .then(person => { window.agentDetails = { ...person, extension: person.phoneNumbers?.find(number => number.type?.includes('extension'))?.value }; })
+            .catch(error => this.updateResultSpan(error.message, 'red'));
+        }
+
+        this.listen(Desktop.agentStateInfo, 'updated', (contact) => {
+            customLog('New state updated received:', contact);
+            this.captureQueueSession(contact);
         });
 
-        Desktop.agentStateInfo.addEventListener('updated', (contact) => {
-            customLog('New state updated received:', contact);
-        });
+        for (const event of ['eAgentChannelStateChanged', 'eAgentChannelReloginSuccess', 'eAgentReloginSuccess']) {
+          this.listen(Desktop.agentStateInfo, event, contact => this.captureQueueSession(contact));
+        }
 
         let self = this;
-        Desktop.agentContact.addEventListener('eAgentOfferContact', (contact) => {
+        this.listen(Desktop.agentContact, 'eAgentOfferContact', (contact) => {
             customLog('New eAgentOfferContact received:', contact);
-            const taskId = contact.data.interactionId;
-            let loadingIcon = self.shadowRoot.getElementById(taskId+"loading-");
+            const taskId = contact.data?.interactionId || contact.interactionId;
+            if (taskId && taskId === self.webRtcTaskId) self.shadowRoot.getElementById('webrtc-status').textContent = 'Webex reported an offer for this call. Click Accept browser call.';
+            let loadingIcon = self.shadowRoot.getElementById(taskId+"-loading");
             customLog(loadingIcon);
-            loadingIcon.classList.add("invisible");
+            loadingIcon?.classList.add("invisible");
         });
 
         // Enable Conference buttons when agent answers a call
-        Desktop.agentContact.addEventListener('eAgentContactAssigned', (contact) => {
+        this.listen(Desktop.agentContact, 'eAgentContactAssigned', (contact) => {
             customLog('Agent answered call - enabling Conference buttons');
             self.updateButtonStates(true); // Agent is on call
         });
 
         // Disable Conference buttons when agent's call ends
-        Desktop.agentContact.addEventListener('eAgentContactEnded', (contact) => {
+        this.listen(Desktop.agentContact, 'eAgentContactEnded', (contact) => {
             customLog('Agent call ended - disabling Conference buttons');
+            self.clearWebRtcAccept();
             self.updateButtonStates(false); // Agent is not on call
         });
 
         // Also handle when agent wraps up (task ends)
-        Desktop.agentContact.addEventListener('eAgentWrapup', (contact) => {
+        this.listen(Desktop.agentContact, 'eAgentWrapup', (contact) => {
             customLog('Agent entered wrapup - disabling Conference buttons');
+            const id = contact.data?.interactionId || contact.interactionId;
+            if (id && self.transferPickInFlight) self.transferWrapupTasks?.add(id);
+            self.clearWebRtcAccept();
             self.updateButtonStates(false); // Agent is not on call
         });
 
         // Handle when contact ends
-        Desktop.agentContact.addEventListener('eContactEnded', (contact) => {
+        this.listen(Desktop.agentContact, 'eContactEnded', (contact) => {
             customLog('Contact ended - disabling Conference buttons');
+            self.clearWebRtcAccept();
             self.updateButtonStates(false); // Agent is not on call
         });
         
-        this.loadContent();
+        this.loadTransferQueues();
+        await this.loadContent();
 
+        const webexService = Desktop.agentContact.SERVICE?.webex;
+        if (settings.conferenceEnabled && webexService?.meetings && webexService?.internal?.mercury) {
         webexService.meetings.register().then(res => {
           customLog("webexService.meetings.register() done!");
           try{
-            webexService.internal.mercury.connect().then(() => {
+            return webexService.internal.mercury.connect().then(() => {
                 customLog("Mercury Connected.");
 
-                webexService.internal.mercury.on('event:telephony_calls.received', async (event) => {
+                if (!self.isConnected) return;
+                self.mercury = webexService.internal.mercury;
+                self.mercuryHandler = async (event) => {
                     customLog("mercury telephony_calls.received EVENT:");
                     customLog(event);
                     var callingToken = Desktop.agentContact.SERVICE.webexCalling.getAccessTokenFunc();
@@ -1131,7 +1326,8 @@ class myDesktopSDK extends HTMLElement {
                         // Start conference with active calls - only if merge operation is pending
                         if(showMergePanel === true && 
                            previousCallNumber && 
-                           previousCallNumber === currentCall.data.remoteParty.number){
+                           previousCall?.data?.callId &&
+                           previousCallNumber === currentCall.data?.remoteParty?.number){
                           customLog("Auto-merge conditions met - previousCallNumber matches and merge panel is active");
                           const conferenceResponse = await fetch('https://webexapis.com/v1/telephony/conference', {
                               method: 'POST',
@@ -1183,25 +1379,28 @@ class myDesktopSDK extends HTMLElement {
                         customLog("Error handling telephony_calls.received event:");
                         customLog(error);
                     }
-                });
-                customLog("initialized webexService.internal.mercury.on:event:telephony_calls.received listener.");
+                };
+                self.mercury.on('event:telephony_calls.received', self.mercuryHandler);
+                customLog("initialized calling listener");
             });
           }catch(e){
             customLog("webexService.meetings.register() error:");
             customLog(e);
           }
-        });
+        }).catch(error => self.updateResultSpan(`Calling: ${error.message}`, 'red'));
 
+        }
         customLog("loaded = true");
         loaded = true;
       } else {
         customLog("webex already loaded.");
-        this.loadContent();
+        await this.loadContent();
       }
     }catch(e){
-      customLog('connectedCallback error', e);
+      this.updateResultSpan(e.message, 'red');
       let self = this;
-      setTimeout(async function(){
+      this.retryTimer = setTimeout(async function(){
+        if (!self.isConnected) return;
         try{
           customLog("Trying to reload...");
           await self.connectedCallback();
@@ -1214,9 +1413,17 @@ class myDesktopSDK extends HTMLElement {
   }
 
   disconnectedCallback() {
-    Desktop.agentContact.removeAllEventListeners();
+    clearInterval(this.taskTimer);
+    clearInterval(this.stateTimer);
+    clearTimeout(this.retryTimer);
+    this.clearWebRtcAccept();
+    for (const { service, event, handler } of this.desktopListeners) service.removeEventListener(event, handler);
+    this.desktopListeners = [];
+    if (this.mercury && this.mercuryHandler) this.mercury.off('event:telephony_calls.received', this.mercuryHandler);
+    loaded = false;
+    if (currentWidgetInstance === this) currentWidgetInstance = null;
   }
 
 }
 
-customElements.define("sa-ds-voice-sdk", myDesktopSDK);
+if (!customElements.get("sa-ds-voice-sdk")) customElements.define("sa-ds-voice-sdk", myDesktopSDK);

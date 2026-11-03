@@ -1,0 +1,32 @@
+{
+  "header": {
+    "id": "dw-header",
+    "widgets": {
+      "emergency": {
+        "comp": "cmergent-emergency-header",
+        "script": "https://spark.chasemergenthal.com/cherry-picker/build/emergency-header.js?v=emergency-header-2",
+        "properties": {
+          "accessToken": "$STORE.auth.accessToken"
+        },
+        "attributes": {
+          "style": "height:64px;display:flex;align-items:center;"
+        }
+      }
+    },
+    "layout": {
+      "areas": [
+        [
+          "emergency"
+        ]
+      ],
+      "size": {
+        "cols": [
+          1
+        ],
+        "rows": [
+          1
+        ]
+      }
+    }
+  }
+}

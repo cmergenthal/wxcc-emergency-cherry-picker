@@ -1,13 +1,13 @@
 const path = require("path");
-const Dotenv = require('dotenv-webpack');
+
 
 
 const config = {
   mode: "production",
-  entry: "./widget-SDK-Voice.js",
+  entry: { bundle: "./widget-SDK-Voice.js", "emergency-header": "./emergency-header-widget.js" },
   output: {
-    path: path.resolve(__dirname, "build"),
-    filename: "bundle.js",
+    path: path.resolve(__dirname, "dist/build"),
+    filename: "[name].js",
     publicPath: "build/"
   },
   module: {
@@ -18,9 +18,7 @@ const config = {
       }
     ]
   },
-  plugins: [
-    new Dotenv()
-  ]
+  plugins: []
 };
 
 module.exports = config;
